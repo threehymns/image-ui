@@ -105,6 +105,53 @@ pub fn (mut app ViewerApp) init_samplers() {
 	app.samplers_init = true
 }
 
+// is_shared_sampler reports whether smp is one of the two long-lived
+// shared samplers. Shared samplers must never be destroyed on image switch.
+fn (app &ViewerApp) is_shared_sampler(smp gfx.Sampler) bool {
+	if !app.samplers_init || smp.id == 0 {
+		return false
+	}
+	return smp.id == app.sampler_linear.id || smp.id == app.sampler_nearest.id
+}
+
+// free_current_image releases GPU resources of the previously displayed image
+// without touching the shared samplers. Sokol sampler pool is only 64 entries
+// and the image pool 128, so every sibling switch must free the old handles
+// or rapid arrow-key navigation exhausts the pools (SAMPLER_POOL_EXHAUSTED).
+fn (mut app ViewerApp) free_current_image() {
+	if !app.image.simg_ok || app.image.simg.id == 0 {
+		return
+	}
+	if app.window == unsafe { nil } {
+		app.image = gg.Image{}
+		return
+	}
+	old_id := app.image.id
+	old_ssmp := app.image.ssmp
+	mut gg_ctx := app.window.ui.gg
+	mut cached := gg_ctx.get_cached_image_by_idx(old_id)
+	if cached.ok {
+		cached_ssmp := cached.ssmp
+		// Detach shared sampler so remove_cached_image_by_idx does not destroy it.
+		if app.is_shared_sampler(cached_ssmp) {
+			cached.ssmp = gfx.Sampler{}
+		}
+		gg_ctx.remove_cached_image_by_idx(old_id)
+		// In the in-sync case app.image and the cache share one owned handle
+		// which remove just destroyed exactly once. Only free app.image's
+		// sampler when it is a distinct owned handle (out-of-sync safety).
+		if old_ssmp.id != 0 && old_ssmp.id != cached_ssmp.id && !app.is_shared_sampler(old_ssmp) {
+			gfx.destroy_sampler(old_ssmp)
+		}
+	} else {
+		gfx.destroy_image(app.image.simg)
+		if !app.is_shared_sampler(old_ssmp) && old_ssmp.id != 0 {
+			gfx.destroy_sampler(old_ssmp)
+		}
+	}
+	app.image = gg.Image{}
+}
+
 // draw_checkerboard renders the subtle neutral checkerboard grid clipped to visible canvas.
 pub fn draw_checkerboard(ctx &gg.Context, x f32, y f32, w f32, h f32, cell_size f32, canvas_w int, canvas_h int) {
 	if w <= 0 || h <= 0 || canvas_w <= 0 || canvas_h <= 0 {
@@ -201,6 +248,10 @@ pub fn (mut app ViewerApp) poll_scanner() {
 }
 
 pub fn (mut app ViewerApp) load_image(path string) {
+	// Release previous GPU image before switching or showing an error card.
+	// Without this, each sibling switch leaks 1 sokol image + 1 sampler and
+	// rapid arrow-key navigation exhausts the 64-entry sampler pool.
+	app.free_current_image()
 	if path == '' {
 		app.core.set_error('', '')
 		app.update_window_title()
@@ -259,18 +310,34 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		}
 		return
 	}
+	// init_sokol_image allocates one sampler per image. Keep only the shared
+	// linear/nearest samplers for the app lifetime; otherwise every navigation
+	// leaks its owned sampler into the 64-entry pool.
+	mut new_img := loaded_img
+	app.init_samplers()
+	if app.samplers_init && new_img.simg_ok && new_img.ssmp.id != 0 {
+		owned_ssmp := new_img.ssmp
+		new_img.ssmp = app.sampler_linear
+		mut new_cached := gg_ctx.get_cached_image_by_idx(new_img.id)
+		if new_cached.ok {
+			new_cached.ssmp = app.sampler_linear
+		}
+		if owned_ssmp.id != app.sampler_linear.id && owned_ssmp.id != app.sampler_nearest.id {
+			gfx.destroy_sampler(owned_ssmp)
+		}
+	}
 	// Belt-and-braces: draw_image_with_config renders ctx.image_cache[id],
 	// not the returned struct, so sync GPU handles into the cache entry.
-	mut cached := gg_ctx.get_cached_image_by_idx(loaded_img.id)
-	if !cached.simg_ok && loaded_img.simg_ok {
-		cached.simg = loaded_img.simg
-		cached.ssmp = loaded_img.ssmp
+	mut cached := gg_ctx.get_cached_image_by_idx(new_img.id)
+	if !cached.simg_ok && new_img.simg_ok {
+		cached.simg = new_img.simg
+		cached.ssmp = new_img.ssmp
 		cached.simg_ok = true
 		cached.ok = true
 	}
 
-	app.image = loaded_img
-	app.core.set_image_loaded(img_path, loaded_img.width, loaded_img.height)
+	app.image = new_img
+	app.core.set_image_loaded(img_path, new_img.width, new_img.height)
 
 	// If scanning a new directory, spawn background worker channel
 	clean_dir := os.real_path(dir_path)
@@ -450,16 +517,27 @@ pub fn (mut app ViewerApp) draw_canvas(mut d ui.DrawDevice, c &ui.CanvasLayout) 
 	ctx.draw_rect_filled(0, 0, f32(canvas_w), f32(canvas_h), canvas_bg_color)
 
 	if app.core.has_image {
-		// Update sampler on the Sokol image cache according to filter mode
+		// Switch between the two shared samplers according to filter mode.
+		// Only reassign on change; blindly overwriting every frame orphaned
+		// the per-image owned sampler from init_sokol_image (1 leak per load).
 		active_sampler := if app.core.filter_mode == .nearest {
 			app.sampler_nearest
 		} else {
 			app.sampler_linear
 		}
-		app.image.ssmp = active_sampler
-		mut cached_img := ctx.get_cached_image_by_idx(app.image.id)
-		if cached_img.ok {
-			cached_img.ssmp = active_sampler
+		if app.image.ssmp.id != active_sampler.id {
+			old_ssmp := app.image.ssmp
+			app.image.ssmp = active_sampler
+			mut cached_img := ctx.get_cached_image_by_idx(app.image.id)
+			if cached_img.ok {
+				cached_img.ssmp = active_sampler
+			}
+			// Safety net for images created before the load-time sampler
+			// replacement (or when gfx was invalid at load): free the orphaned
+			// owned sampler exactly once. Shared samplers are never destroyed.
+			if old_ssmp.id != 0 && !app.is_shared_sampler(old_ssmp) {
+				gfx.destroy_sampler(old_ssmp)
+			}
 		}
 
 		// 2. Draw subtle neutral checkerboard grid directly under visual image bounds clipped to canvas
