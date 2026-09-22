@@ -12,6 +12,40 @@ A fast, lightweight desktop image viewer system application built with [V](https
 - **Desktop & Wayland Integration**: Wayland CSD protocol support (`zxdg_decoration_manager_v1_mode_client_side`), FreeDesktop `.desktop` entry, OS trash integration (`gio trash`), and clipboard copy.
 - **Crisp SVG Iconography**: Dedicated vector graphics for all UI controls; zero emojis or unicode symbol fallbacks.
 
+## Building & Running
+
+### Prerequisites
+- [V compiler](https://github.com/vlang/v) (latest master or release)
+- `ui` module (`v install ui`)
+- Wayland development libraries (on Linux Wayland sessions: `wayland-client`, `wayland-cursor`, `wayland-egl`, `xkbcommon`)
+
+### Build Commands
+
+Using `make` (auto-detects Wayland session):
+```bash
+make
+```
+
+Or using the V compiler directly:
+- **Wayland session (pure Wayland compositors e.g. Niri, Sway, GNOME Wayland)**:
+  ```bash
+  v -d sokol_wayland -o image-ui .
+  ```
+- **X11 / Xwayland session**:
+  ```bash
+  v -o image-ui .
+  ```
+
+### Running
+```bash
+./image-ui [path_to_image]
+```
+
+### Running Tests
+```bash
+v test .
+```
+
 ## Architecture & Domain Model
 
 - [Domain Glossary (CONTEXT.md)](./CONTEXT.md)
