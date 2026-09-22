@@ -238,13 +238,35 @@ pub fn (mut app ViewerApp) load_image(path string) {
 	}
 
 	mut gg_ctx := app.window.ui.gg
-	loaded_img := gg_ctx.create_image(img_path) or {
+	// NOTE: gg.Context.create_image pushes into image_cache BEFORE
+	// init_sokol_image, leaving the cached copy (which draw_image_with_config
+	// actually renders from) with simg_ok=false for any image created after
+	// startup. create_image_from_byte_array inits BEFORE caching, so load via
+	// bytes to keep the cache entry valid across sibling navigation.
+	img_bytes := os.read_bytes(img_path) or {
+		app.core.set_error(img_path, 'Unable to read image: ${err.msg()}')
+		app.update_window_title()
+		if app.window != unsafe { nil } {
+			app.window.refresh()
+		}
+		return
+	}
+	loaded_img := gg_ctx.create_image_from_byte_array(img_bytes) or {
 		app.core.set_error(img_path, 'Unable to load image: ${err.msg()}')
 		app.update_window_title()
 		if app.window != unsafe { nil } {
 			app.window.refresh()
 		}
 		return
+	}
+	// Belt-and-braces: draw_image_with_config renders ctx.image_cache[id],
+	// not the returned struct, so sync GPU handles into the cache entry.
+	mut cached := gg_ctx.get_cached_image_by_idx(loaded_img.id)
+	if !cached.simg_ok && loaded_img.simg_ok {
+		cached.simg = loaded_img.simg
+		cached.ssmp = loaded_img.ssmp
+		cached.simg_ok = true
+		cached.ok = true
 	}
 
 	app.image = loaded_img
