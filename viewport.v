@@ -150,14 +150,24 @@ pub fn calculate_initial_viewport(canvas_w int, canvas_h int, img_w int, img_h i
 	return calculate_initial_viewport_rotated(canvas_w, canvas_h, img_w, img_h, 0)
 }
 
-// format_window_title generates the window title adhering to the convention:
-// `image-ui - <filename> (<width>x<height>)` or `image-ui` when no image is loaded.
-pub fn format_window_title(file_path string, img_w int, img_h int) string {
+// format_window_title_with_index generates the window title adhering to the convention:
+// `image-ui - <filename> (<current>/<total>) (<width>x<height>)` or standard title if total <= 1.
+pub fn format_window_title_with_index(file_path string, img_w int, img_h int, current_idx int, total_count int) string {
 	if file_path == '' || img_w <= 0 || img_h <= 0 {
 		return 'image-ui'
 	}
 	filename := file_path.all_after_last('/').all_after_last('\\')
+	if total_count > 1 {
+		idx_display := current_idx + 1
+		return 'image-ui - ${filename} (${idx_display}/${total_count}) (${img_w}x${img_h})'
+	}
 	return 'image-ui - ${filename} (${img_w}x${img_h})'
+}
+
+// format_window_title generates the window title adhering to the convention:
+// `image-ui - <filename> (<width>x<height>)` or `image-ui` when no image is loaded.
+pub fn format_window_title(file_path string, img_w int, img_h int) string {
+	return format_window_title_with_index(file_path, img_w, img_h, 0, 1)
 }
 
 // zoom_at performs continuous cursor-anchored zoom, guaranteeing that the image point
@@ -171,11 +181,11 @@ pub fn zoom_at(vp Viewport, cursor_x f32, cursor_y f32, target_scale f32) Viewpo
 		return vp
 	}
 
-	ratio := new_scale / vp.scale
-	new_x := cursor_x - (cursor_x - vp.x) * ratio
-	new_y := cursor_y - (cursor_y - vp.y) * ratio
-	new_w := vp.width * ratio
-	new_h := vp.height * ratio
+	tratio := new_scale / vp.scale
+	new_x := cursor_x - (cursor_x - vp.x) * tratio
+	new_y := cursor_y - (cursor_y - vp.y) * tratio
+	new_w := vp.width * tratio
+	new_h := vp.height * tratio
 
 	return Viewport{
 		x:        new_x
