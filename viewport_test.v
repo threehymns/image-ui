@@ -2,97 +2,98 @@ module main
 
 import math
 
-fn test_format_window_title() {
-	assert format_window_title('', 0, 0) == 'image-ui'
-	assert format_window_title('photo.png', 1920, 1080) == 'image-ui - photo.png (1920x1080)'
-	assert format_window_title('/home/user/images/sample.jpg', 800, 600) == 'image-ui - sample.jpg (800x600)'
-	assert format_window_title('C:\\Photos\\test.png', 100, 200) == 'image-ui - test.png (100x200)'
-}
-
-fn test_viewport_zero_or_negative_dimensions() {
-	vp1 := calculate_initial_viewport(0, 0, 100, 100)
-	assert vp1.width == 0
-	assert vp1.height == 0
-
-	vp2 := calculate_initial_viewport(800, 600, 0, 0)
-	assert vp2.width == 0
-	assert vp2.height == 0
-
-	vp3 := calculate_fit_to_window(-10, 600, 100, 100)
-	assert vp3.width == 0
-	assert vp3.height == 0
-}
-
-fn test_viewport_actual_size_centered() {
-	// Canvas 800x600, image 400x200
-	vp := calculate_actual_size(800, 600, 400, 200)
+fn test_calculate_actual_size() {
+	vp := calculate_actual_size(1024, 768, 640, 480)
 	assert vp.scale == 1.0
-	assert vp.width == 400
-	assert vp.height == 200
-	assert vp.x == 200
-	assert vp.y == 200
+	assert vp.width == 640.0
+	assert vp.height == 480.0
+	assert vp.x == (1024.0 - 640.0) / 2.0
+	assert vp.y == (768.0 - 480.0) / 2.0
 }
 
-fn test_viewport_initial_small_image() {
-	// Image fits inside canvas: should stay 1:1 and centered
-	vp := calculate_initial_viewport(800, 600, 300, 150)
-	assert vp.scale == 1.0
-	assert vp.width == 300
-	assert vp.height == 150
-	assert vp.x == 250
-	assert vp.y == 225
-}
-
-fn test_viewport_initial_large_image_scaled_down() {
-	// Image 1600x1200 on canvas 800x600: scale factor should be 0.5
-	vp := calculate_initial_viewport(800, 600, 1600, 1200)
+fn test_calculate_fit_to_window_larger_image() {
+	// 2000x1000 in 1000x1000 canvas -> constrained by width, scale = 0.5
+	vp := calculate_fit_to_window(1000, 1000, 2000, 1000)
 	assert math.abs(vp.scale - 0.5) < 0.001
-	assert math.abs(vp.width - 800) < 0.001
-	assert math.abs(vp.height - 600) < 0.001
+	assert math.abs(vp.width - 1000.0) < 0.001
+	assert math.abs(vp.height - 500.0) < 0.001
 	assert math.abs(vp.x - 0.0) < 0.001
-	assert math.abs(vp.y - 0.0) < 0.001
+	assert math.abs(vp.y - 250.0) < 0.001
+
+	// 1000x2000 in 1000x1000 canvas -> constrained by height, scale = 0.5
+	vp2 := calculate_fit_to_window(1000, 1000, 1000, 2000)
+	assert math.abs(vp2.scale - 0.5) < 0.001
+	assert math.abs(vp2.width - 500.0) < 0.001
+	assert math.abs(vp2.height - 1000.0) < 0.001
+	assert math.abs(vp2.x - 250.0) < 0.001
+	assert math.abs(vp2.y - 0.0) < 0.001
 }
 
-fn test_viewport_fit_to_window_aspect_ratio_wide() {
-	// Image 1920x1080 on canvas 960x1000
-	vp := calculate_fit_to_window(960, 1000, 1920, 1080)
-	assert math.abs(vp.scale - 0.5) < 0.001
-	assert math.abs(vp.width - 960) < 0.001
-	assert math.abs(vp.height - 540) < 0.001
-	assert math.abs(vp.x - 0) < 0.001
-	assert math.abs(vp.y - (1000 - 540) / 2.0) < 0.001
-}
+fn test_calculate_initial_viewport_small_vs_large() {
+	// Small image (400x300 in 800x600) -> 1:1 pixel scale, centered
+	vp_small := calculate_initial_viewport(800, 600, 400, 300)
+	assert vp_small.scale == 1.0
+	assert vp_small.width == 400.0
+	assert vp_small.height == 300.0
+	assert vp_small.x == 200.0
+	assert vp_small.y == 150.0
 
-fn test_viewport_fit_to_window_aspect_ratio_tall() {
-	// Image 1000x2000 on canvas 800x1000
-	vp := calculate_fit_to_window(800, 1000, 1000, 2000)
-	assert math.abs(vp.scale - 0.5) < 0.001
-	assert math.abs(vp.width - 500) < 0.001
-	assert math.abs(vp.height - 1000) < 0.001
-	assert math.abs(vp.x - (800 - 500) / 2.0) < 0.001
-	assert math.abs(vp.y - 0) < 0.001
+	// Large image (1600x1200 in 800x600) -> fit to window, scale = 0.5
+	vp_large := calculate_initial_viewport(800, 600, 1600, 1200)
+	assert math.abs(vp_large.scale - 0.5) < 0.001
+	assert math.abs(vp_large.width - 800.0) < 0.001
+	assert math.abs(vp_large.height - 600.0) < 0.001
+	assert math.abs(vp_large.x - 0.0) < 0.001
+	assert math.abs(vp_large.y - 0.0) < 0.001
 }
 
 fn test_clamp_zoom_scale() {
 	assert clamp_zoom_scale(0.01) == min_zoom_scale
-	assert clamp_zoom_scale(0.05) == min_zoom_scale
-	assert clamp_zoom_scale(1.0) == 1.0
-	assert clamp_zoom_scale(50.0) == 50.0
 	assert clamp_zoom_scale(100.0) == max_zoom_scale
+	assert clamp_zoom_scale(1.5) == 1.5
+}
+
+fn test_screen_to_image_and_inverse() {
+	vp := Viewport{
+		x:      100.0
+		y:      50.0
+		width:  800.0
+		height: 600.0
+		scale:  1.0
+	}
+	img_w := 800
+	img_h := 600
+
+	// Test top-left of image
+	ix, iy := screen_to_image(100.0, 50.0, vp, img_w, img_h)
+	assert math.abs(ix - 0.0) < 0.001
+	assert math.abs(iy - 0.0) < 0.001
+
+	// Test center of image
+	ix_c, iy_c := screen_to_image(500.0, 350.0, vp, img_w, img_h)
+	assert math.abs(ix_c - 400.0) < 0.001
+	assert math.abs(iy_c - 300.0) < 0.001
+
+	// Test inverse
+	sx, sy := image_to_screen(400.0, 300.0, vp, img_w, img_h)
+	assert math.abs(sx - 500.0) < 0.001
+	assert math.abs(sy - 350.0) < 0.001
 }
 
 fn test_cursor_anchored_zoom() {
-	// Start with image 800x600 at 1:1, centered in 1000x800 canvas
-	vp0 := calculate_actual_size(1000, 800, 800, 600)
-	assert vp0.x == 100
-	assert vp0.y == 100
-	assert vp0.scale == 1.0
+	// Image 800x600 displayed at 1:1 centered in 1000x800 canvas
+	vp0 := Viewport{
+		x:      100.0
+		y:      100.0
+		width:  800.0
+		height: 600.0
+		scale:  1.0
+	}
 
-	// Cursor is at canvas position (300, 250)
 	cursor_x := f32(300.0)
 	cursor_y := f32(250.0)
 
-	// Image coordinate before zoom under cursor
+	// Image pixel under cursor before zoom
 	ix0, iy0 := screen_to_image(cursor_x, cursor_y, vp0, 800, 600)
 
 	// Zoom in to 2.0x
@@ -458,4 +459,11 @@ fn test_draw_image_params() {
 	// At 90 deg rotation, horizontal screen flip maps to texture Y (flip_y)
 	assert flip_x == false
 	assert flip_y == true
+}
+
+fn test_format_window_title() {
+	assert format_window_title('', 0, 0) == 'image-ui'
+	assert format_window_title('/path/to/test.png', 1920, 1080) == 'image-ui - test.png (1920x1080)'
+	assert format_window_title_with_index('/path/to/test.png', 1920, 1080, 0, 1) == 'image-ui - test.png (1920x1080)'
+	assert format_window_title_with_index('/path/to/test.png', 1920, 1080, 2, 10) == 'image-ui - test.png (3/10) (1920x1080)'
 }

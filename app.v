@@ -1,5 +1,7 @@
 module main
 
+import os
+
 // App represents the headless application controller and state machine.
 // It maintains playlist, image metadata, and viewport transformation state
 // without requiring an active OpenGL/Wayland display server.
@@ -15,6 +17,11 @@ pub mut:
 	error_msg     string
 	filter_mode   TextureFilterMode = .linear
 	viewport_init bool
+	// Sibling playlist and traversal state
+	playlist      []string
+	active_index  int
+	is_scanning   bool
+	scan_complete bool
 }
 
 // new_app initializes a new headless App instance.
@@ -22,6 +29,16 @@ pub fn new_app() App {
 	return App{
 		filter_mode: .linear
 	}
+}
+
+fn clamp_int(val int, min int, max int) int {
+	if val < min {
+		return min
+	}
+	if val > max {
+		return max
+	}
+	return val
 }
 
 // set_canvas_size updates the canvas dimensions and initializes viewport if needed.
@@ -42,6 +59,19 @@ pub fn (mut app App) set_image_loaded(path string, w int, h int) {
 	app.error_msg = ''
 	app.viewport_init = false
 
+	if app.playlist.len == 0 && path != '' {
+		app.playlist = [path]
+		app.active_index = 0
+	} else if path != '' {
+		// Ensure active_index matches path if it exists in playlist
+		for i, p in app.playlist {
+			if p == path || os.file_name(p) == os.file_name(path) {
+				app.active_index = i
+				break
+			}
+		}
+	}
+
 	if app.canvas_w > 0 && app.canvas_h > 0 {
 		app.reset_viewport()
 	}
@@ -55,6 +85,154 @@ pub fn (mut app App) set_error(path string, msg string) {
 	app.img_height = 0
 	app.error_msg = msg
 	app.viewport_init = false
+}
+
+// open_path opens a target image file or directory.
+// When passed a directory, automatically resolves the first image in natural sort order.
+pub fn (mut app App) open_path(path string) {
+	if path == '' {
+		app.target_path = ''
+		app.has_image = false
+		app.playlist = []
+		app.active_index = 0
+		app.is_scanning = false
+		app.scan_complete = false
+		app.error_msg = ''
+		return
+	}
+
+	if os.is_dir(path) {
+		first_img := find_first_image_in_dir(path)
+		if first_img != none {
+			app.target_path = first_img
+			app.playlist = [first_img]
+			app.active_index = 0
+			app.is_scanning = true
+			app.scan_complete = false
+			app.error_msg = ''
+		} else {
+			app.set_error(path, 'No supported images found in directory: ${path}')
+			app.playlist = []
+			app.active_index = 0
+			app.is_scanning = false
+			app.scan_complete = true
+		}
+		return
+	}
+
+	app.target_path = path
+	app.playlist = [path]
+	app.active_index = 0
+	app.is_scanning = true
+	app.scan_complete = false
+	app.error_msg = ''
+}
+
+// integrate_batch merges streamed sibling scanner batches into the playlist,
+// ensuring natural sort order and preserving the active image pointer.
+pub fn (mut app App) integrate_batch(batch SiblingBatch) {
+	if batch.items.len == 0 {
+		if batch.is_last {
+			app.is_scanning = false
+			app.scan_complete = true
+		}
+		return
+	}
+
+	current_active := if app.active_index >= 0 && app.active_index < app.playlist.len {
+		app.playlist[app.active_index]
+	} else {
+		app.target_path
+	}
+
+	if batch.is_neighborhood {
+		app.playlist = batch.items.clone()
+	} else {
+		mut existing := map[string]bool{}
+		for item in app.playlist {
+			existing[item] = true
+		}
+		for item in batch.items {
+			if !existing[item] {
+				app.playlist << item
+				existing[item] = true
+			}
+		}
+		natural_sort(mut app.playlist)
+	}
+
+	// Re-locate current active file in the playlist
+	mut new_idx := -1
+	for i, p in app.playlist {
+		if p == current_active || (current_active != '' && os.file_name(p) == os.file_name(current_active)) {
+			new_idx = i
+			break
+		}
+	}
+	if new_idx >= 0 {
+		app.active_index = new_idx
+		app.target_path = app.playlist[new_idx]
+	} else if app.playlist.len > 0 {
+		app.active_index = clamp_int(app.active_index, 0, app.playlist.len - 1)
+		app.target_path = app.playlist[app.active_index]
+	}
+
+	if batch.is_last {
+		app.is_scanning = false
+		app.scan_complete = true
+	} else {
+		app.is_scanning = true
+		app.scan_complete = false
+	}
+}
+
+// step_sibling navigates the playlist by delta steps (e.g. +1, -1, +10, -10).
+// Returns true if navigation changed the active image.
+pub fn (mut app App) step_sibling(delta int) bool {
+	if app.playlist.len <= 1 || delta == 0 {
+		return false
+	}
+	target_idx := clamp_int(app.active_index + delta, 0, app.playlist.len - 1)
+	if target_idx == app.active_index {
+		return false
+	}
+	app.active_index = target_idx
+	app.target_path = app.playlist[target_idx]
+	app.viewport_init = false
+	return true
+}
+
+// next_sibling steps forward to the adjacent next sibling (+1).
+pub fn (mut app App) next_sibling() bool {
+	return app.step_sibling(1)
+}
+
+// prev_sibling steps backward to the adjacent previous sibling (-1).
+pub fn (mut app App) prev_sibling() bool {
+	return app.step_sibling(-1)
+}
+
+// next_secondary_step steps forward by secondary navigation chunk (+10).
+pub fn (mut app App) next_secondary_step() bool {
+	return app.step_sibling(10)
+}
+
+// prev_secondary_step steps backward by secondary navigation chunk (-10).
+pub fn (mut app App) prev_secondary_step() bool {
+	return app.step_sibling(-10)
+}
+
+// sibling_count returns total number of images currently discovered in the playlist.
+pub fn (app &App) sibling_count() int {
+	return app.playlist.len
+}
+
+// active_sibling_path returns the file path of the currently active sibling image.
+pub fn (app &App) active_sibling_path() string {
+	if app.active_index >= 0 && app.active_index < app.playlist.len {
+		return app.playlist[app.active_index]
+	}
+	return app.target_path
 }
 
 // reset_viewport computes the initial fit/actual-size viewport for the current image.
@@ -120,8 +298,8 @@ pub fn (mut app App) zoom_fit() {
 		height:   fit_vp.height
 		scale:    fit_vp.scale
 		rotation: app.viewport.rotation
-		flip_h:   app.viewport.flip_h
-		flip_v:   app.viewport.flip_v
+		flip_h:   fit_vp.flip_h
+		flip_v:   fit_vp.flip_v
 	}
 	app.filter_mode = get_texture_filter_for_scale(app.viewport.scale, app.filter_mode)
 }

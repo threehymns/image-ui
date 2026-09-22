@@ -24,6 +24,12 @@ fn test_cli_with_image_path() {
 	assert config.show_help == false
 }
 
+fn test_cli_with_directory_path() {
+	config := parse_cli_args(['/home/user/Pictures']) or { panic(err) }
+	assert config.image_path == '/home/user/Pictures'
+	assert config.show_help == false
+}
+
 fn test_cli_with_program_and_image_path() {
 	config := parse_cli_args(['image-ui', '/home/user/Pictures/sample.jpg']) or { panic(err) }
 	assert config.image_path == '/home/user/Pictures/sample.jpg'
