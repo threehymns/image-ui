@@ -40,6 +40,33 @@ fn test_app_actions_zoom_and_filter() {
 	assert app.filter_mode == .linear
 }
 
+fn test_app_zoom_at_off_center_preserves_anchor() {
+	mut app := new_app()
+	app.set_canvas_size(1000, 800)
+	app.set_image_loaded('sample.png', 800, 600)
+	// Image 800x600 fits inside 1000x800 canvas at 1:1, centered at (100, 100)
+	assert app.viewport.x == 100.0
+	assert app.viewport.y == 100.0
+
+	// Cursor at (300, 250) (off center)
+	cursor_x := f32(300.0)
+	cursor_y := f32(250.0)
+
+	ix0, iy0 := screen_to_image(cursor_x, cursor_y, app.viewport, 800, 600)
+
+	// Zoom in by factor 1.2
+	app.zoom_at(cursor_x, cursor_y, 1.2)
+
+	// Image point directly under cursor must remain invariant
+	ix1, iy1 := screen_to_image(cursor_x, cursor_y, app.viewport, 800, 600)
+	assert math.abs(ix1 - ix0) < 0.01
+	assert math.abs(iy1 - iy0) < 0.01
+
+	// Viewport must NOT have been forced to center (1000 - 960)/2 = 20
+	// Position is 300 - (300 - 100) * 1.2 = 60
+	assert math.abs(app.viewport.x - 60.0) < 0.01
+}
+
 fn test_app_actions_rotation_and_flip() {
 	mut app := new_app()
 	app.set_canvas_size(1000, 800)

@@ -119,11 +119,11 @@ fn test_cursor_anchored_zoom() {
 
 fn test_cursor_anchored_zoom_at_center_and_edges() {
 	vp := Viewport{
-		x: 50.0
-		y: 50.0
-		width: 400.0
+		x:      50.0
+		y:      50.0
+		width:  400.0
 		height: 300.0
-		scale: 1.0
+		scale:  1.0
 	}
 
 	// 1. Zoom with cursor at top-left corner (50, 50)
@@ -143,11 +143,11 @@ fn test_cursor_anchored_zoom_at_center_and_edges() {
 fn test_constrain_pan_when_smaller_than_canvas() {
 	// If image is 400x300 in 800x600 canvas, it must remain centered
 	vp := Viewport{
-		x: 10.0 // Attempt to position off-center
-		y: 10.0
-		width: 400.0
+		x:      10.0 // Attempt to position off-center
+		y:      10.0
+		width:  400.0
 		height: 300.0
-		scale: 1.0
+		scale:  1.0
 	}
 	constrained := constrain_pan(vp, 800, 600)
 	assert constrained.x == 200.0
@@ -159,11 +159,11 @@ fn test_constrain_pan_when_larger_than_canvas() {
 	// Allowed X range: [800 - 1600, 0] = [-800, 0]
 	// Allowed Y range: [600 - 1200, 0] = [-600, 0]
 	vp := Viewport{
-		x: -400.0
-		y: -300.0
-		width: 1600.0
+		x:      -400.0
+		y:      -300.0
+		width:  1600.0
 		height: 1200.0
-		scale: 2.0
+		scale:  2.0
 	}
 
 	// Within bounds: preserved
@@ -173,11 +173,11 @@ fn test_constrain_pan_when_larger_than_canvas() {
 
 	// Drag too far right (x > 0): clamped to 0
 	vp_right := Viewport{
-		x: 150.0
-		y: -300.0
-		width: 1600.0
+		x:      150.0
+		y:      -300.0
+		width:  1600.0
 		height: 1200.0
-		scale: 2.0
+		scale:  2.0
 	}
 	c2 := constrain_pan(vp_right, 800, 600)
 	assert c2.x == 0.0
@@ -185,11 +185,11 @@ fn test_constrain_pan_when_larger_than_canvas() {
 
 	// Drag too far left (x < -800): clamped to -800
 	vp_left := Viewport{
-		x: -1200.0
-		y: -300.0
-		width: 1600.0
+		x:      -1200.0
+		y:      -300.0
+		width:  1600.0
 		height: 1200.0
-		scale: 2.0
+		scale:  2.0
 	}
 	c3 := constrain_pan(vp_left, 800, 600)
 	assert c3.x == -800.0
@@ -197,34 +197,57 @@ fn test_constrain_pan_when_larger_than_canvas() {
 
 	// Drag too far down (y > 0): clamped to 0
 	vp_down := Viewport{
-		x: -400.0
-		y: 80.0
-		width: 1600.0
+		x:      -400.0
+		y:      80.0
+		width:  1600.0
 		height: 1200.0
-		scale: 2.0
+		scale:  2.0
 	}
 	c4 := constrain_pan(vp_down, 800, 600)
 	assert c4.y == 0.0
 
 	// Drag too far up (y < -600): clamped to -600
 	vp_up := Viewport{
-		x: -400.0
-		y: -950.0
-		width: 1600.0
+		x:      -400.0
+		y:      -950.0
+		width:  1600.0
 		height: 1200.0
-		scale: 2.0
+		scale:  2.0
 	}
 	c5 := constrain_pan(vp_up, 800, 600)
 	assert c5.y == -600.0
 }
 
+fn test_constrain_zoom_preserves_anchor() {
+	// Canvas 1000x800, image 500x400 (smaller than canvas)
+	// Initial position: centered at (250, 200)
+	vp0 := Viewport{
+		x:      250.0
+		y:      200.0
+		width:  500.0
+		height: 400.0
+		scale:  1.0
+	}
+
+	// Zoom at cursor (300, 250) by factor 1.15
+	vp1 := zoom_at(vp0, 300.0, 250.0, 1.15)
+	constrained := constrain_zoom(vp1, 1000, 800)
+
+	// Constrained position must NOT force center to (1000 - 575)/2 = 212.5;
+	// it must preserve the cursor-anchored position (242.5, 192.5)
+	assert math.abs(constrained.x - 242.5) < 0.01
+	assert math.abs(constrained.y - 192.5) < 0.01
+	assert math.abs(constrained.width - 575.0) < 0.01
+	assert math.abs(constrained.height - 460.0) < 0.01
+}
+
 fn test_subpixel_panning() {
 	vp := Viewport{
-		x: -400.0
-		y: -300.0
-		width: 1600.0
+		x:      -400.0
+		y:      -300.0
+		width:  1600.0
 		height: 1200.0
-		scale: 2.0
+		scale:  2.0
 	}
 	// Pan by fractional sub-pixel delta
 	panned := pan(vp, 2.75, -3.125, 800, 600)
@@ -234,11 +257,11 @@ fn test_subpixel_panning() {
 
 fn test_rotation_step_cycling() {
 	mut vp := Viewport{
-		x: 200.0
-		y: 150.0
-		width: 400.0
-		height: 300.0
-		scale: 1.0
+		x:        200.0
+		y:        150.0
+		width:    400.0
+		height:   300.0
+		scale:    1.0
 		rotation: 0
 	}
 
@@ -266,59 +289,70 @@ fn test_rotation_step_cycling() {
 	// Counter-clockwise cycle
 	vp = rotate_ccw(vp, 800, 600)
 	assert vp.rotation == 270
+	assert vp.width == 300.0
+	assert vp.height == 400.0
 
 	vp = rotate_ccw(vp, 800, 600)
 	assert vp.rotation == 180
+	assert vp.width == 400.0
+	assert vp.height == 300.0
 
 	vp = rotate_ccw(vp, 800, 600)
 	assert vp.rotation == 90
+	assert vp.width == 300.0
+	assert vp.height == 400.0
 
 	vp = rotate_ccw(vp, 800, 600)
 	assert vp.rotation == 0
+	assert vp.width == 400.0
+	assert vp.height == 300.0
 }
 
-fn test_flip_toggling() {
-	mut vp := Viewport{
-		x: 0
-		y: 0
-		width: 100
-		height: 100
-		scale: 1.0
+fn test_mirror_flips() {
+	vp0 := Viewport{
+		x:      100.0
+		y:      100.0
+		width:  200.0
+		height: 200.0
+		scale:  1.0
 		flip_h: false
 		flip_v: false
 	}
 
-	// Flip H
-	vp = flip_horizontal(vp)
-	assert vp.flip_h == true
-	assert vp.flip_v == false
+	vph := flip_horizontal(vp0)
+	assert vph.flip_h == true
+	assert vph.flip_v == false
 
-	// Flip H again resets
-	vp = flip_horizontal(vp)
-	assert vp.flip_h == false
-	assert vp.flip_v == false
+	vph2 := flip_horizontal(vph)
+	assert vph2.flip_h == false
 
-	// Flip V
-	vp = flip_vertical(vp)
-	assert vp.flip_h == false
-	assert vp.flip_v == true
+	vpv := flip_vertical(vp0)
+	assert vpv.flip_h == false
+	assert vpv.flip_v == true
 
-	// Flip V again resets
-	vp = flip_vertical(vp)
-	assert vp.flip_h == false
-	assert vp.flip_v == false
+	vpv2 := flip_vertical(vpv)
+	assert vpv2.flip_v == false
 }
 
-fn test_fit_to_window_with_rotation() {
-	// Image 1920x1080 rotated 90 degrees in canvas 1080x1920
-	// Rotated effective dimensions: 1080x1920
-	// Should fit perfectly at scale 1.0
-	vp := calculate_fit_to_window_rotated(1080, 1920, 1920, 1080, 90)
-	assert math.abs(vp.scale - 1.0) < 0.001
-	assert math.abs(vp.width - 1080) < 0.001
-	assert math.abs(vp.height - 1920) < 0.001
-	assert math.abs(vp.x - 0.0) < 0.001
-	assert math.abs(vp.y - 0.0) < 0.001
+fn test_fit_to_window_after_rotation() {
+	// Image 1600x800 on canvas 800x600
+	// Unrotated fit: scale = min(800/1600, 600/800) = 0.5. Width = 800, Height = 400.
+	vp_unrot := calculate_fit_to_window(800, 600, 1600, 800)
+	assert math.abs(vp_unrot.scale - 0.5) < 0.001
+	assert math.abs(vp_unrot.width - 800.0) < 0.001
+	assert math.abs(vp_unrot.height - 400.0) < 0.001
+	assert math.abs(vp_unrot.x - 0.0) < 0.001
+	assert math.abs(vp_unrot.y - 100.0) < 0.001
+
+	// Rotated 90 degrees: effective dimensions become 800x1600.
+	// Fit scale = min(800/800, 600/1600) = min(1.0, 0.375) = 0.375.
+	// Displayed width = 800 * 0.375 = 300. Displayed height = 1600 * 0.375 = 600.
+	vp_rot := calculate_fit_to_window_rotated(800, 600, 1600, 800, 90)
+	assert math.abs(vp_rot.scale - 0.375) < 0.001
+	assert math.abs(vp_rot.width - 300.0) < 0.001
+	assert math.abs(vp_rot.height - 600.0) < 0.001
+	assert math.abs(vp_rot.x - 250.0) < 0.001
+	assert math.abs(vp_rot.y - 0.0) < 0.001
 }
 
 fn test_double_click_toggle_fit_and_actual() {
@@ -374,14 +408,14 @@ fn test_coordinate_transforms_roundtrip() {
 	for rot in rotations {
 		for f in flips {
 			vp := Viewport{
-				x: 120.0
-				y: 80.0
-				width: if rot % 180 != 0 { f32(img_h) * 1.5 } else { f32(img_w) * 1.5 }
-				height: if rot % 180 != 0 { f32(img_w) * 1.5 } else { f32(img_h) * 1.5 }
-				scale: 1.5
+				x:        120.0
+				y:        80.0
+				width:    if rot % 180 != 0 { f32(img_h) * 1.5 } else { f32(img_w) * 1.5 }
+				height:   if rot % 180 != 0 { f32(img_w) * 1.5 } else { f32(img_h) * 1.5 }
+				scale:    1.5
 				rotation: rot
-				flip_h: f[0]
-				flip_v: f[1]
+				flip_h:   f[0]
+				flip_v:   f[1]
 			}
 
 			for ix in test_points_x {
@@ -399,14 +433,14 @@ fn test_coordinate_transforms_roundtrip() {
 
 fn test_draw_image_params() {
 	vp := Viewport{
-		x: 100.0
-		y: 50.0
-		width: 400.0
-		height: 800.0
-		scale: 2.0
+		x:        100.0
+		y:        50.0
+		width:    400.0
+		height:   800.0
+		scale:    2.0
 		rotation: 90
-		flip_h: true
-		flip_v: false
+		flip_h:   true
+		flip_v:   false
 	}
 	// Image 400x200 rotated 90 degrees
 	img_rect, rot_deg, flip_x, flip_y := get_draw_image_params(vp, 400, 200)

@@ -101,8 +101,9 @@ pub fn calculate_actual_size_rotated(canvas_w int, canvas_h int, img_w int, img_
 	}
 
 	eff_w, eff_h := get_effective_dimensions(img_w, img_h, norm_rot)
-	w := f32(eff_w)
-	h := f32(eff_h)
+	scale := clamp_zoom_scale(1.0)
+	w := f32(eff_w) * scale
+	h := f32(eff_h) * scale
 	x := (f32(canvas_w) - w) / 2.0
 	y := (f32(canvas_h) - h) / 2.0
 
@@ -111,7 +112,7 @@ pub fn calculate_actual_size_rotated(canvas_w int, canvas_h int, img_w int, img_
 		y:        y
 		width:    w
 		height:   h
-		scale:    1.0
+		scale:    scale
 		rotation: norm_rot
 	}
 }
@@ -121,9 +122,9 @@ pub fn calculate_actual_size(canvas_w int, canvas_h int, img_w int, img_h int) V
 	return calculate_actual_size_rotated(canvas_w, canvas_h, img_w, img_h, 0)
 }
 
-// calculate_initial_viewport_rotated determines the initial viewport layout when an image is loaded.
-// Small images are displayed at actual size (1:1) centered; images exceeding canvas bounds
-// are scaled down via fit-to-window while preserving aspect ratio.
+// calculate_initial_viewport_rotated determines initial layout:
+// - Downscales large images to fit canvas while preserving aspect ratio.
+// - Centers smaller images at 1:1 pixel scale.
 pub fn calculate_initial_viewport_rotated(canvas_w int, canvas_h int, img_w int, img_h int, rotation int) Viewport {
 	norm_rot := (rotation % 360 + 360) % 360
 	if canvas_w <= 0 || canvas_h <= 0 || img_w <= 0 || img_h <= 0 {
@@ -141,7 +142,6 @@ pub fn calculate_initial_viewport_rotated(canvas_w int, canvas_h int, img_w int,
 	if eff_w <= canvas_w && eff_h <= canvas_h {
 		return calculate_actual_size_rotated(canvas_w, canvas_h, img_w, img_h, norm_rot)
 	}
-
 	return calculate_fit_to_window_rotated(canvas_w, canvas_h, img_w, img_h, norm_rot)
 }
 
@@ -189,7 +189,7 @@ pub fn zoom_at(vp Viewport, cursor_x f32, cursor_y f32, target_scale f32) Viewpo
 	}
 }
 
-// constrain_pan clamps viewport coordinates such that:
+// constrain_pan clamps viewport coordinates during pan gestures:
 // 1. If displayed size <= canvas size, the image is kept centered.
 // 2. If displayed size > canvas size, the image edges cannot leave the window boundaries.
 pub fn constrain_pan(vp Viewport, canvas_w int, canvas_h int) Viewport {
@@ -215,6 +215,65 @@ pub fn constrain_pan(vp Viewport, canvas_w int, canvas_h int) Viewport {
 	ch := f32(canvas_h)
 	if vp.height <= ch {
 		new_y = (ch - vp.height) / 2.0
+	} else {
+		min_y := ch - vp.height
+		max_y := f32(0.0)
+		if new_y < min_y {
+			new_y = min_y
+		} else if new_y > max_y {
+			new_y = max_y
+		}
+	}
+
+	return Viewport{
+		x:        new_x
+		y:        new_y
+		width:    vp.width
+		height:   vp.height
+		scale:    vp.scale
+		rotation: vp.rotation
+		flip_h:   vp.flip_h
+		flip_v:   vp.flip_v
+	}
+}
+
+// constrain_zoom keeps the image within canvas boundaries without forcing centering on smaller dimensions,
+// preserving the cursor-anchored position across all zoom levels.
+pub fn constrain_zoom(vp Viewport, canvas_w int, canvas_h int) Viewport {
+	if canvas_w <= 0 || canvas_h <= 0 {
+		return vp
+	}
+
+	mut new_x := vp.x
+	cw := f32(canvas_w)
+	if vp.width <= cw {
+		min_x := f32(0.0)
+		max_x := cw - vp.width
+		if new_x < min_x {
+			new_x = min_x
+		} else if new_x > max_x {
+			new_x = max_x
+		}
+	} else {
+		min_x := cw - vp.width
+		max_x := f32(0.0)
+		if new_x < min_x {
+			new_x = min_x
+		} else if new_x > max_x {
+			new_x = max_x
+		}
+	}
+
+	mut new_y := vp.y
+	ch := f32(canvas_h)
+	if vp.height <= ch {
+		min_y := f32(0.0)
+		max_y := ch - vp.height
+		if new_y < min_y {
+			new_y = min_y
+		} else if new_y > max_y {
+			new_y = max_y
+		}
 	} else {
 		min_y := ch - vp.height
 		max_y := f32(0.0)

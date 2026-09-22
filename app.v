@@ -67,14 +67,14 @@ pub fn (mut app App) reset_viewport() {
 	app.viewport_init = true
 }
 
-// zoom_at zooms continuously centered on the specified canvas cursor coordinates.
+// zoom_at zooms continuously centered on the specified canvas cursor coordinates,
+// ensuring the image point under (cursor_x, cursor_y) remains invariant.
 pub fn (mut app App) zoom_at(cursor_x f32, cursor_y f32, factor f32) {
 	if !app.has_image || app.viewport.scale <= 0 {
 		return
 	}
 	target_scale := app.viewport.scale * factor
-	new_vp := zoom_at(app.viewport, cursor_x, cursor_y, target_scale)
-	app.viewport = constrain_pan(new_vp, app.canvas_w, app.canvas_h)
+	app.viewport = zoom_at(app.viewport, cursor_x, cursor_y, target_scale)
 	app.filter_mode = get_texture_filter_for_scale(app.viewport.scale, app.filter_mode)
 }
 
