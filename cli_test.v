@@ -28,6 +28,14 @@ fn test_build_cli_command_metadata() {
 	assert cmd.posix_mode == true
 }
 
+fn test_resolve_image_path_with_directory_path() {
+	assert resolve_image_path(['/home/user/Pictures']) == '/home/user/Pictures'
+}
+
+fn test_resolve_image_path_with_program_and_image_path() {
+	assert resolve_image_path(['image-ui', '/home/user/Pictures/sample.jpg'][1..]) == '/home/user/Pictures/sample.jpg'
+}
+
 fn test_cli_parse_no_positional_args() {
 	mut cmd := build_cli_command()
 	cmd.execute = noop_viewer

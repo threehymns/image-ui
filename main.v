@@ -75,6 +75,9 @@ pub mut:
 	last_click_time i64
 	last_click_x    f32
 	last_click_y    f32
+	scanned_dir     string
+	scanner_ch      chan SiblingBatch
+	has_scanner_ch  bool
 }
 
 // init_samplers allocates bilinear and nearest-neighbor Sokol samplers.
@@ -100,6 +103,53 @@ pub fn (mut app ViewerApp) init_samplers() {
 	}
 	app.sampler_nearest = gfx.make_sampler(&smp_nearest)
 	app.samplers_init = true
+}
+
+// is_shared_sampler reports whether smp is one of the two long-lived
+// shared samplers. Shared samplers must never be destroyed on image switch.
+fn (app &ViewerApp) is_shared_sampler(smp gfx.Sampler) bool {
+	if !app.samplers_init || smp.id == 0 {
+		return false
+	}
+	return smp.id == app.sampler_linear.id || smp.id == app.sampler_nearest.id
+}
+
+// free_current_image releases GPU resources of the previously displayed image
+// without touching the shared samplers. Sokol sampler pool is only 64 entries
+// and the image pool 128, so every sibling switch must free the old handles
+// or rapid arrow-key navigation exhausts the pools (SAMPLER_POOL_EXHAUSTED).
+fn (mut app ViewerApp) free_current_image() {
+	if !app.image.simg_ok || app.image.simg.id == 0 {
+		return
+	}
+	if app.window == unsafe { nil } {
+		app.image = gg.Image{}
+		return
+	}
+	old_id := app.image.id
+	old_ssmp := app.image.ssmp
+	mut gg_ctx := app.window.ui.gg
+	mut cached := gg_ctx.get_cached_image_by_idx(old_id)
+	if cached.ok {
+		cached_ssmp := cached.ssmp
+		// Detach shared sampler so remove_cached_image_by_idx does not destroy it.
+		if app.is_shared_sampler(cached_ssmp) {
+			cached.ssmp = gfx.Sampler{}
+		}
+		gg_ctx.remove_cached_image_by_idx(old_id)
+		// In the in-sync case app.image and the cache share one owned handle
+		// which remove just destroyed exactly once. Only free app.image's
+		// sampler when it is a distinct owned handle (out-of-sync safety).
+		if old_ssmp.id != 0 && old_ssmp.id != cached_ssmp.id && !app.is_shared_sampler(old_ssmp) {
+			gfx.destroy_sampler(old_ssmp)
+		}
+	} else {
+		gfx.destroy_image(app.image.simg)
+		if !app.is_shared_sampler(old_ssmp) && old_ssmp.id != 0 {
+			gfx.destroy_sampler(old_ssmp)
+		}
+	}
+	app.image = gg.Image{}
 }
 
 // draw_checkerboard renders the subtle neutral checkerboard grid clipped to visible canvas.
@@ -150,11 +200,62 @@ pub fn draw_checkerboard(ctx &gg.Context, x f32, y f32, w f32, h f32, cell_size 
 	}
 }
 
+// update_window_title refreshes the window title to show image name, dimensions, and playlist index.
+pub fn (mut app ViewerApp) update_window_title() {
+	if app.window == unsafe { nil } {
+		return
+	}
+	if app.core.has_image {
+		title := format_window_title_with_index(
+			app.core.target_path,
+			app.image.width,
+			app.image.height,
+			app.core.active_index,
+			app.core.playlist.len,
+		)
+		app.window.set_title(title)
+	} else {
+		app.window.set_title('image-ui')
+	}
+}
+
+// poll_scanner drains pending sibling scanner batches non-blockingly.
+pub fn (mut app ViewerApp) poll_scanner() {
+	if !app.has_scanner_ch {
+		return
+	}
+	mut received_any := false
+	mut count := 0
+	for count < 10 {
+		select {
+			batch := <-app.scanner_ch {
+				app.core.integrate_batch(batch)
+				received_any = true
+				count++
+				if batch.is_last {
+					app.has_scanner_ch = false
+					break
+				}
+			}
+			else {
+				break
+			}
+		}
+	}
+	if received_any {
+		app.update_window_title()
+	}
+}
+
 pub fn (mut app ViewerApp) load_image(path string) {
+	// Release previous GPU image before switching or showing an error card.
+	// Without this, each sibling switch leaks 1 sokol image + 1 sampler and
+	// rapid arrow-key navigation exhausts the 64-entry sampler pool.
+	app.free_current_image()
 	if path == '' {
 		app.core.set_error('', '')
+		app.update_window_title()
 		if app.window != unsafe { nil } {
-			app.window.set_title(format_window_title('', 0, 0))
 			app.window.refresh()
 		}
 		return
@@ -162,28 +263,95 @@ pub fn (mut app ViewerApp) load_image(path string) {
 
 	if !os.exists(path) {
 		app.core.set_error(path, 'File not found: ${path}')
+		app.update_window_title()
 		if app.window != unsafe { nil } {
-			app.window.set_title(format_window_title('', 0, 0))
 			app.window.refresh()
 		}
 		return
+	}
+
+	// Resolve target image path and parent folder
+	mut img_path := path
+	mut dir_path := ''
+	if os.is_dir(path) {
+		first_img := find_first_image_in_dir(path) or {
+			app.core.set_error(path, 'No supported images found in directory: ${path}')
+			app.update_window_title()
+			if app.window != unsafe { nil } {
+				app.window.refresh()
+			}
+			return
+		}
+		img_path = first_img
+		dir_path = path
+	} else {
+		dir_path = os.dir(path)
 	}
 
 	mut gg_ctx := app.window.ui.gg
-	loaded_img := gg_ctx.create_image(path) or {
-		app.core.set_error(path, 'Unable to load image: ${err.msg()}')
+	// NOTE: gg.Context.create_image pushes into image_cache BEFORE
+	// init_sokol_image, leaving the cached copy (which draw_image_with_config
+	// actually renders from) with simg_ok=false for any image created after
+	// startup. create_image_from_byte_array inits BEFORE caching, so load via
+	// bytes to keep the cache entry valid across sibling navigation.
+	img_bytes := os.read_bytes(img_path) or {
+		app.core.set_error(img_path, 'Unable to read image: ${err.msg()}')
+		app.update_window_title()
 		if app.window != unsafe { nil } {
-			app.window.set_title(format_window_title('', 0, 0))
 			app.window.refresh()
 		}
 		return
 	}
+	loaded_img := gg_ctx.create_image_from_byte_array(img_bytes) or {
+		app.core.set_error(img_path, 'Unable to load image: ${err.msg()}')
+		app.update_window_title()
+		if app.window != unsafe { nil } {
+			app.window.refresh()
+		}
+		return
+	}
+	// init_sokol_image allocates one sampler per image. Keep only the shared
+	// linear/nearest samplers for the app lifetime; otherwise every navigation
+	// leaks its owned sampler into the 64-entry pool.
+	mut new_img := loaded_img
+	app.init_samplers()
+	if app.samplers_init && new_img.simg_ok && new_img.ssmp.id != 0 {
+		owned_ssmp := new_img.ssmp
+		new_img.ssmp = app.sampler_linear
+		mut new_cached := gg_ctx.get_cached_image_by_idx(new_img.id)
+		if new_cached.ok {
+			new_cached.ssmp = app.sampler_linear
+		}
+		if owned_ssmp.id != app.sampler_linear.id && owned_ssmp.id != app.sampler_nearest.id {
+			gfx.destroy_sampler(owned_ssmp)
+		}
+	}
+	// Belt-and-braces: draw_image_with_config renders ctx.image_cache[id],
+	// not the returned struct, so sync GPU handles into the cache entry.
+	mut cached := gg_ctx.get_cached_image_by_idx(new_img.id)
+	if !cached.simg_ok && new_img.simg_ok {
+		cached.simg = new_img.simg
+		cached.ssmp = new_img.ssmp
+		cached.simg_ok = true
+		cached.ok = true
+	}
 
-	app.image = loaded_img
-	app.core.set_image_loaded(path, loaded_img.width, loaded_img.height)
+	app.image = new_img
+	app.core.set_image_loaded(img_path, new_img.width, new_img.height)
 
+	// If scanning a new directory, spawn background worker channel
+	clean_dir := os.real_path(dir_path)
+	if clean_dir != app.scanned_dir {
+		app.scanned_dir = clean_dir
+		app.scanner_ch = chan SiblingBatch{cap: 32}
+		app.has_scanner_ch = true
+		app.core.is_scanning = true
+		app.core.scan_complete = false
+		spawn scan_directory_siblings(clean_dir, img_path, app.scanner_ch)
+	}
+
+	app.update_window_title()
 	if app.window != unsafe { nil } {
-		app.window.set_title(format_window_title(path, loaded_img.width, loaded_img.height))
 		app.window.refresh()
 	}
 }
@@ -193,7 +361,7 @@ pub fn (mut app ViewerApp) win_init(w &ui.Window) {
 	if app.core.target_path != '' {
 		app.load_image(app.core.target_path)
 	} else {
-		app.window.set_title(format_window_title('', 0, 0))
+		app.update_window_title()
 	}
 }
 
@@ -208,12 +376,38 @@ pub fn (mut app ViewerApp) on_files_dropped(w &ui.Window, e ui.MouseEvent) {
 }
 
 pub fn (mut app ViewerApp) on_key_down(w &ui.Window, e ui.KeyEvent) {
-	if !app.core.has_image {
+	if !app.core.has_image && app.core.playlist.len == 0 {
 		return
 	}
 
+	app.poll_scanner()
+
 	mut changed := false
-	if e.key == .r {
+	if e.key == .left {
+		if app.core.prev_sibling() {
+			app.load_image(app.core.target_path)
+		}
+	} else if e.key == .right {
+		if app.core.next_sibling() {
+			app.load_image(app.core.target_path)
+		}
+	} else if e.key == .up {
+		if app.core.prev_secondary_step() {
+			app.load_image(app.core.target_path)
+		}
+	} else if e.key == .down {
+		if app.core.next_secondary_step() {
+			app.load_image(app.core.target_path)
+		}
+	} else if e.key == .page_up {
+		if app.core.prev_secondary_step() {
+			app.load_image(app.core.target_path)
+		}
+	} else if e.key == .page_down {
+		if app.core.next_secondary_step() {
+			app.load_image(app.core.target_path)
+		}
+	} else if e.key == .r {
 		if e.mods.has(.shift) {
 			app.core.rotate_ccw()
 		} else {
@@ -315,6 +509,7 @@ pub fn (mut app ViewerApp) draw_canvas(mut d ui.DrawDevice, c &ui.CanvasLayout) 
 	canvas_w := c.width
 	canvas_h := c.height
 
+	app.poll_scanner()
 	app.init_samplers()
 	app.core.set_canvas_size(canvas_w, canvas_h)
 
@@ -322,16 +517,27 @@ pub fn (mut app ViewerApp) draw_canvas(mut d ui.DrawDevice, c &ui.CanvasLayout) 
 	ctx.draw_rect_filled(0, 0, f32(canvas_w), f32(canvas_h), canvas_bg_color)
 
 	if app.core.has_image {
-		// Update sampler on the Sokol image cache according to filter mode
+		// Switch between the two shared samplers according to filter mode.
+		// Only reassign on change; blindly overwriting every frame orphaned
+		// the per-image owned sampler from init_sokol_image (1 leak per load).
 		active_sampler := if app.core.filter_mode == .nearest {
 			app.sampler_nearest
 		} else {
 			app.sampler_linear
 		}
-		app.image.ssmp = active_sampler
-		mut cached_img := ctx.get_cached_image_by_idx(app.image.id)
-		if cached_img.ok {
-			cached_img.ssmp = active_sampler
+		if app.image.ssmp.id != active_sampler.id {
+			old_ssmp := app.image.ssmp
+			app.image.ssmp = active_sampler
+			mut cached_img := ctx.get_cached_image_by_idx(app.image.id)
+			if cached_img.ok {
+				cached_img.ssmp = active_sampler
+			}
+			// Safety net for images created before the load-time sampler
+			// replacement (or when gfx was invalid at load): free the orphaned
+			// owned sampler exactly once. Shared samplers are never destroyed.
+			if old_ssmp.id != 0 && !app.is_shared_sampler(old_ssmp) {
+				gfx.destroy_sampler(old_ssmp)
+			}
 		}
 
 		// 2. Draw subtle neutral checkerboard grid directly under visual image bounds clipped to canvas

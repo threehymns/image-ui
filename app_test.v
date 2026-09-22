@@ -1,6 +1,8 @@
 module main
 
+import os
 import math
+import time
 
 fn test_app_initialization_and_load() {
 	mut app := new_app()
@@ -130,4 +132,109 @@ fn test_app_pan_constrained() {
 	// Attempt to pan excessively left (off screen): clamped to -800
 	app.pan(-2000.0, 0.0)
 	assert app.viewport.x == -800.0
+}
+
+fn test_app_playlist_navigation() {
+	mut app := new_app()
+	app.open_path('/photos/img5.png')
+	assert app.target_path == '/photos/img5.png'
+	assert app.playlist == ['/photos/img5.png']
+	assert app.active_index == 0
+
+	// Integrate neighborhood batch
+	batch := SiblingBatch{
+		items:           ['/photos/img1.png', '/photos/img2.png', '/photos/img5.png', '/photos/img10.png', '/photos/img20.png']
+		is_neighborhood: true
+		is_last:         true
+	}
+	app.integrate_batch(batch)
+	assert app.playlist.len == 5
+	assert app.active_index == 2
+	assert app.active_sibling_path() == '/photos/img5.png'
+
+	// Next sibling (+1)
+	assert app.next_sibling() == true
+	assert app.active_index == 3
+	assert app.active_sibling_path() == '/photos/img10.png'
+
+	// Prev sibling (-1)
+	assert app.prev_sibling() == true
+	assert app.active_index == 2
+	assert app.active_sibling_path() == '/photos/img5.png'
+
+	// Secondary navigation step (+10): clamps to end
+	assert app.next_secondary_step() == true
+	assert app.active_index == 4
+	assert app.active_sibling_path() == '/photos/img20.png'
+
+	// Step past end should return false (no change)
+	assert app.next_sibling() == false
+	assert app.active_index == 4
+
+	// Secondary navigation step (-10): clamps to beginning
+	assert app.prev_secondary_step() == true
+	assert app.active_index == 0
+	assert app.active_sibling_path() == '/photos/img1.png'
+
+	// Step before start should return false (no change)
+	assert app.prev_sibling() == false
+	assert app.active_index == 0
+}
+
+fn test_app_progressive_batch_integration_preserves_active() {
+	mut app := new_app()
+	app.open_path('/photos/pic50.png')
+
+	// First batch: neighborhood of 50..60
+	batch1 := SiblingBatch{
+		items:           ['/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
+		is_neighborhood: true
+		is_last:         false
+	}
+	app.integrate_batch(batch1)
+	assert app.active_index == 0
+	assert app.active_sibling_path() == '/photos/pic50.png'
+	assert app.is_scanning == true
+	assert app.scan_complete == false
+
+	// Navigate to pic51
+	assert app.next_sibling() == true
+	assert app.active_sibling_path() == '/photos/pic51.png'
+	assert app.active_index == 1
+
+	// Progressive batch arrives with preceding items (pic10..pic49)
+	batch2 := SiblingBatch{
+		items:           ['/photos/pic10.png', '/photos/pic20.png']
+		is_neighborhood: false
+		is_last:         true
+	}
+	app.integrate_batch(batch2)
+
+	// Playlist should now be naturally sorted: [pic10, pic20, pic50, pic51, pic52]
+	assert app.playlist == ['/photos/pic10.png', '/photos/pic20.png', '/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
+	// Active image must still be pic51, now at index 3
+	assert app.active_sibling_path() == '/photos/pic51.png'
+	assert app.active_index == 3
+	assert app.is_scanning == false
+	assert app.scan_complete == true
+}
+
+fn test_app_open_directory() {
+	tmp_dir := os.join_path(os.temp_dir(), 'test_app_dir_${time.ticks()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	os.write_file(os.join_path(tmp_dir, 'img2.png'), 'data') or { panic(err) }
+	os.write_file(os.join_path(tmp_dir, 'img1.png'), 'data') or { panic(err) }
+
+	mut app := new_app()
+	app.open_path(tmp_dir)
+
+	// Automatically resolves first image in natural sort order (img1.png)
+	assert app.target_path == os.join_path(tmp_dir, 'img1.png')
+	assert app.playlist.len == 1
+	assert app.active_index == 0
+	assert app.is_scanning == true
 }
