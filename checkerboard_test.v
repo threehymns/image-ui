@@ -66,3 +66,27 @@ fn test_compute_checkerboard_cells_partial_edges() {
 	assert cells[3].width == 4
 	assert cells[3].height == 4
 }
+
+fn test_compute_visible_checkerboard_cells_clipped_to_canvas() {
+	// Canvas 800x600, image zoomed to 16000x12000 (extreme zoom)
+	// Viewport x = -4000, y = -3000
+	cells := compute_visible_checkerboard_cells(-4000, -3000, 16000, 12000, 16, 800, 600)
+	// Without clipping, 16000x12000 would be 1000x750 = 750,000 cells!
+	// With canvas clipping to 800x600, cells cannot exceed (800/16 + 2) * (600/16 + 2) = 52 * 40 = 2080 cells!
+	assert cells.len > 0
+	assert cells.len <= 2100
+
+	// Every generated cell must be within canvas bounds
+	for c in cells {
+		assert c.x >= 0.0
+		assert c.y >= 0.0
+		assert c.x + c.width <= 800.01
+		assert c.y + c.height <= 600.01
+	}
+}
+
+fn test_compute_visible_checkerboard_cells_off_screen() {
+	// Completely off screen image
+	cells := compute_visible_checkerboard_cells(-2000, -2000, 500, 500, 16, 800, 600)
+	assert cells.len == 0
+}

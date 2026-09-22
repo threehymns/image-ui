@@ -2,9 +2,11 @@ module main
 
 import os
 import math
+import time
 import ui
 import gg
 import sokol.sapp
+import sokol.gfx
 
 // Subtle neutral colors for alpha checkerboard rendering
 pub const checker_color_dark = gg.Color{
@@ -61,37 +63,84 @@ pub const error_text_color = gg.Color{
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	window        &ui.Window = unsafe { nil }
-	target_path   string
-	image         gg.Image
-	has_image     bool
-	viewport      Viewport
-	last_canvas_w int
-	last_canvas_h int
-	error_msg     string
+	window          &ui.Window = unsafe { nil }
+	core            App
+	image           gg.Image
+	sampler_linear  gfx.Sampler
+	sampler_nearest gfx.Sampler
+	samplers_init   bool
+	is_dragging     bool
+	drag_prev_x     f32
+	drag_prev_y     f32
+	last_click_time i64
+	last_click_x    f32
+	last_click_y    f32
 }
 
-// draw_checkerboard renders the subtle neutral checkerboard grid directly via gg context.
-pub fn draw_checkerboard(ctx &gg.Context, x f32, y f32, w f32, h f32, cell_size f32) {
-	if w <= 0 || h <= 0 {
+// init_samplers allocates bilinear and nearest-neighbor Sokol samplers.
+pub fn (mut app ViewerApp) init_samplers() {
+	if app.samplers_init {
+		return
+	}
+	mut smp_linear := gfx.SamplerDesc{
+		min_filter:    .linear
+		mag_filter:    .linear
+		mipmap_filter: .linear
+		wrap_u:        .clamp_to_edge
+		wrap_v:        .clamp_to_edge
+	}
+	app.sampler_linear = gfx.make_sampler(&smp_linear)
+
+	mut smp_nearest := gfx.SamplerDesc{
+		min_filter:    .nearest
+		mag_filter:    .nearest
+		mipmap_filter: .linear
+		wrap_u:        .clamp_to_edge
+		wrap_v:        .clamp_to_edge
+	}
+	app.sampler_nearest = gfx.make_sampler(&smp_nearest)
+	app.samplers_init = true
+}
+
+// draw_checkerboard renders the subtle neutral checkerboard grid clipped to visible canvas.
+pub fn draw_checkerboard(ctx &gg.Context, x f32, y f32, w f32, h f32, cell_size f32, canvas_w int, canvas_h int) {
+	if w <= 0 || h <= 0 || canvas_w <= 0 || canvas_h <= 0 {
 		return
 	}
 	sz := if cell_size > 0 { cell_size } else { default_checker_size }
 
-	// Draw base dark neutral rectangle covering the entire image viewport
-	ctx.draw_rect_filled(x, y, w, h, checker_color_dark)
+	// Calculate intersection of image bounds and visible canvas area
+	vis_x0 := math.max(f32(0.0), x)
+	vis_y0 := math.max(f32(0.0), y)
+	vis_x1 := math.min(f32(canvas_w), x + w)
+	vis_y1 := math.min(f32(canvas_h), y + h)
+
+	if vis_x0 >= vis_x1 || vis_y0 >= vis_y1 {
+		return
+	}
+
+	// Draw base dark neutral rectangle covering only the visible portion of the image
+	ctx.draw_rect_filled(vis_x0, vis_y0, vis_x1 - vis_x0, vis_y1 - vis_y0, checker_color_dark)
 
 	// Draw alternating lighter tiles clipped at the boundary
-	mut cur_y := y
-	mut row := 0
-	for cur_y < y + h {
-		cell_h := if cur_y + sz > y + h { y + h - cur_y } else { sz }
-		mut cur_x := x
-		mut col := 0
-		for cur_x < x + w {
-			cell_w := if cur_x + sz > x + w { x + w - cur_x } else { sz }
-			if (row + col) % 2 == 1 {
-				ctx.draw_rect_filled(cur_x, cur_y, cell_w, cell_h, checker_color_light)
+	start_col := int(math.floor((vis_x0 - x) / sz))
+	start_row := int(math.floor((vis_y0 - y) / sz))
+
+	mut cur_y := y + f32(start_row) * sz
+	mut row := start_row
+	for cur_y < vis_y1 {
+		cell_y0 := math.max(vis_y0, cur_y)
+		cell_y1 := math.min(vis_y1, cur_y + sz)
+		cell_h := cell_y1 - cell_y0
+
+		mut cur_x := x + f32(start_col) * sz
+		mut col := start_col
+		for cur_x < vis_x1 {
+			if (row + col) % 2 != 0 {
+				cell_x0 := math.max(vis_x0, cur_x)
+				cell_x1 := math.min(vis_x1, cur_x + sz)
+				cell_w := cell_x1 - cell_x0
+				ctx.draw_rect_filled(cell_x0, cell_y0, cell_w, cell_h, checker_color_light)
 			}
 			cur_x += sz
 			col++
@@ -103,9 +152,7 @@ pub fn draw_checkerboard(ctx &gg.Context, x f32, y f32, w f32, h f32, cell_size 
 
 pub fn (mut app ViewerApp) load_image(path string) {
 	if path == '' {
-		app.has_image = false
-		app.target_path = ''
-		app.error_msg = ''
+		app.core.set_error('', '')
 		if app.window != unsafe { nil } {
 			app.window.set_title(format_window_title('', 0, 0))
 			app.window.refresh()
@@ -114,9 +161,7 @@ pub fn (mut app ViewerApp) load_image(path string) {
 	}
 
 	if !os.exists(path) {
-		app.has_image = false
-		app.target_path = ''
-		app.error_msg = 'File not found: ${path}'
+		app.core.set_error(path, 'File not found: ${path}')
 		if app.window != unsafe { nil } {
 			app.window.set_title(format_window_title('', 0, 0))
 			app.window.refresh()
@@ -125,10 +170,8 @@ pub fn (mut app ViewerApp) load_image(path string) {
 	}
 
 	mut gg_ctx := app.window.ui.gg
-	img := gg_ctx.create_image(path) or {
-		app.has_image = false
-		app.target_path = ''
-		app.error_msg = 'Unable to load image: ${err.msg()}'
+	loaded_img := gg_ctx.create_image(path) or {
+		app.core.set_error(path, 'Unable to load image: ${err.msg()}')
 		if app.window != unsafe { nil } {
 			app.window.set_title(format_window_title('', 0, 0))
 			app.window.refresh()
@@ -136,28 +179,19 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		return
 	}
 
-	app.image = img
-	app.has_image = true
-	app.target_path = path
-	app.error_msg = ''
+	app.image = loaded_img
+	app.core.set_image_loaded(path, loaded_img.width, loaded_img.height)
 
-	// Calculate initial viewport fit if canvas dimensions are known
-	if app.last_canvas_w > 0 && app.last_canvas_h > 0 {
-		app.viewport = calculate_initial_viewport(app.last_canvas_w, app.last_canvas_h, img.width, img.height)
-	}
-
-	// Update window title: image-ui - photo.png (1920x1080)
-	title := format_window_title(path, img.width, img.height)
 	if app.window != unsafe { nil } {
-		app.window.set_title(title)
+		app.window.set_title(format_window_title(path, loaded_img.width, loaded_img.height))
 		app.window.refresh()
 	}
 }
 
 pub fn (mut app ViewerApp) win_init(w &ui.Window) {
 	app.window = unsafe { w }
-	if app.target_path != '' {
-		app.load_image(app.target_path)
+	if app.core.target_path != '' {
+		app.load_image(app.core.target_path)
 	} else {
 		app.window.set_title(format_window_title('', 0, 0))
 	}
@@ -173,38 +207,148 @@ pub fn (mut app ViewerApp) on_files_dropped(w &ui.Window, e ui.MouseEvent) {
 	}
 }
 
+pub fn (mut app ViewerApp) on_key_down(w &ui.Window, e ui.KeyEvent) {
+	if !app.core.has_image {
+		return
+	}
+
+	mut changed := false
+	if e.key == .r {
+		if e.mods.has(.shift) {
+			app.core.rotate_ccw()
+		} else {
+			app.core.rotate_cw()
+		}
+		changed = true
+	} else if e.key == .h {
+		app.core.flip_h()
+		changed = true
+	} else if e.key == .v {
+		app.core.flip_v()
+		changed = true
+	} else if e.key == .f {
+		app.core.zoom_fit()
+		changed = true
+	} else if e.key == ._0 || e.key == .kp_0 {
+		app.core.zoom_actual()
+		changed = true
+	}
+
+	if changed && app.window != unsafe { nil } {
+		app.window.refresh()
+	}
+}
+
+pub fn (mut app ViewerApp) on_canvas_scroll(c &ui.CanvasLayout, e ui.ScrollEvent) {
+	if !app.core.has_image {
+		return
+	}
+	cursor_x := f32(e.mouse_x)
+	cursor_y := f32(e.mouse_y)
+	delta := f32(e.y)
+	if delta != 0 {
+		factor := if delta > 0 { zoom_step_factor } else { f32(1.0 / zoom_step_factor) }
+		app.core.zoom_at(cursor_x, cursor_y, factor)
+		if app.window != unsafe { nil } {
+			app.window.refresh()
+		}
+	}
+}
+
+pub fn (mut app ViewerApp) on_canvas_mouse_down(c &ui.CanvasLayout, e ui.MouseEvent) {
+	if !app.core.has_image {
+		return
+	}
+	if e.button == .left {
+		app.is_dragging = true
+		app.drag_prev_x = f32(e.x)
+		app.drag_prev_y = f32(e.y)
+	}
+}
+
+pub fn (mut app ViewerApp) on_canvas_mouse_up(c &ui.CanvasLayout, e ui.MouseEvent) {
+	if e.button == .left {
+		app.is_dragging = false
+	}
+}
+
+pub fn (mut app ViewerApp) on_canvas_mouse_move(c &ui.CanvasLayout, e ui.MouseMoveEvent) {
+	if !app.core.has_image || !app.is_dragging {
+		return
+	}
+	dx := f32(e.x) - app.drag_prev_x
+	dy := f32(e.y) - app.drag_prev_y
+	app.drag_prev_x = f32(e.x)
+	app.drag_prev_y = f32(e.y)
+
+	app.core.pan(dx, dy)
+	if app.window != unsafe { nil } {
+		app.window.refresh()
+	}
+}
+
+pub fn (mut app ViewerApp) on_canvas_click(c &ui.CanvasLayout, e ui.MouseEvent) {
+	if !app.core.has_image {
+		return
+	}
+	now := time.ticks()
+	dt := now - app.last_click_time
+	dx := math.abs(f32(e.x) - app.last_click_x)
+	dy := math.abs(f32(e.y) - app.last_click_y)
+
+	// Double-click threshold: within 400ms and 5px radius
+	if dt < 400 && dx <= 5.0 && dy <= 5.0 {
+		app.core.toggle_zoom_fit_actual()
+		app.last_click_time = 0
+		if app.window != unsafe { nil } {
+			app.window.refresh()
+		}
+	} else {
+		app.last_click_time = now
+		app.last_click_x = f32(e.x)
+		app.last_click_y = f32(e.y)
+	}
+}
+
 pub fn (mut app ViewerApp) draw_canvas(mut d ui.DrawDevice, c &ui.CanvasLayout) {
-	ctx := c.ui.gg
+	mut ctx := c.ui.gg
 	canvas_w := c.width
 	canvas_h := c.height
+
+	app.init_samplers()
+	app.core.set_canvas_size(canvas_w, canvas_h)
 
 	// 1. Fill entire canvas background with neutral dark color
 	ctx.draw_rect_filled(0, 0, f32(canvas_w), f32(canvas_h), canvas_bg_color)
 
-	if app.has_image {
-		// If canvas size changed or initial calculation needed
-		if canvas_w != app.last_canvas_w || canvas_h != app.last_canvas_h {
-			app.viewport = calculate_initial_viewport(canvas_w, canvas_h, app.image.width, app.image.height)
-			app.last_canvas_w = canvas_w
-			app.last_canvas_h = canvas_h
+	if app.core.has_image {
+		// Update sampler on the Sokol image cache according to filter mode
+		active_sampler := if app.core.filter_mode == .nearest {
+			app.sampler_nearest
+		} else {
+			app.sampler_linear
+		}
+		app.image.ssmp = active_sampler
+		mut cached_img := ctx.get_cached_image_by_idx(app.image.id)
+		if cached_img.ok {
+			cached_img.ssmp = active_sampler
 		}
 
-		// 2. Draw subtle neutral checkerboard grid directly under image bounds
-		draw_checkerboard(ctx, app.viewport.x, app.viewport.y, app.viewport.width, app.viewport.height, default_checker_size)
+		// 2. Draw subtle neutral checkerboard grid directly under visual image bounds clipped to canvas
+		draw_checkerboard(ctx, app.core.viewport.x, app.core.viewport.y, app.core.viewport.width,
+			app.core.viewport.height, default_checker_size, canvas_w, canvas_h)
 
-		// 3. Draw image with config (Sokol pipeline alpha blending)
+		// 3. Draw image with config
+		img_rect, rot_deg, flip_x, flip_y := get_draw_image_params(app.core.viewport,
+			app.image.width, app.image.height)
 		ctx.draw_image_with_config(gg.DrawImageConfig{
-			img: &app.image
-			img_rect: gg.Rect{
-				x: app.viewport.x
-				y: app.viewport.y
-				width: app.viewport.width
-				height: app.viewport.height
-			}
+			img:      &app.image
+			img_rect: img_rect
+			rotation: rot_deg
+			flip_x:   flip_x
+			flip_y:   flip_y
 		})
 	} else {
-		app.last_canvas_w = canvas_w
-		app.last_canvas_h = canvas_h
 		// Clean empty viewport drop target
 		app.draw_empty_target(ctx, canvas_w, canvas_h)
 	}
@@ -222,8 +366,8 @@ pub fn (app &ViewerApp) draw_empty_target(ctx &gg.Context, canvas_w int, canvas_
 	center_x := int(f32(canvas_w) / 2.0)
 	center_y := int(f32(canvas_h) / 2.0)
 
-	if app.error_msg != '' {
-		ctx.draw_text(center_x, center_y - 20, app.error_msg, gg.TextCfg{
+	if app.core.error_msg != '' {
+		ctx.draw_text(center_x, center_y - 20, app.core.error_msg, gg.TextCfg{
 			size:           14
 			color:          error_text_color
 			align:          .center
@@ -276,20 +420,28 @@ fn main() {
 	}
 
 	mut app := &ViewerApp{
-		target_path: config.image_path
+		core: App{
+			target_path: config.image_path
+		}
 	}
 
 	app.window = ui.window(
-		width:             1024
-		height:            768
-		title:             'image-ui'
-		mode:              .resizable
-		on_init:           app.win_init
-		on_files_dropped:  app.on_files_dropped
-		enable_dragndrop:  true
-		layout:            ui.canvas_layout(
-			id:      'viewport_canvas'
-			on_draw: app.draw_canvas
+		width:            1024
+		height:           768
+		title:            'image-ui'
+		mode:             .resizable
+		on_init:          app.win_init
+		on_files_dropped: app.on_files_dropped
+		on_key_down:      app.on_key_down
+		enable_dragndrop: true
+		layout:           ui.canvas_layout(
+			id:            'viewport_canvas'
+			on_draw:       app.draw_canvas
+			on_click:      app.on_canvas_click
+			on_mouse_down: app.on_canvas_mouse_down
+			on_mouse_up:   app.on_canvas_mouse_up
+			on_mouse_move: app.on_canvas_mouse_move
+			on_scroll:     app.on_canvas_scroll
 		)
 	)
 
