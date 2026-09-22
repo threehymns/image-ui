@@ -608,26 +608,17 @@ pub fn (app &ViewerApp) draw_empty_target(ctx &gg.Context, canvas_w int, canvas_
 }
 
 fn main() {
-	config := parse_cli_args(os.args) or {
-		eprintln('Error: ${err}')
-		exit(1)
-	}
+	mut cmd := build_cli_command()
+	cmd.setup()
+	cmd.parse(os.args)
+}
 
-	if config.show_help {
-		println('image-ui - fast, lightweight desktop image viewer')
-		println('')
-		println('Usage:')
-		println('  image-ui [path_to_image]')
-		println('  image-ui --help')
-		println('')
-		println('Arguments:')
-		println('  path_to_image    Optional file path of an image or folder to display on launch')
-		return
-	}
-
+// launch_viewer boots the desktop viewer for the given image path.
+// An empty path starts with the empty drop target.
+pub fn launch_viewer(image_path string) {
 	mut app := &ViewerApp{
 		core: App{
-			target_path: config.image_path
+			target_path: image_path
 		}
 	}
 
