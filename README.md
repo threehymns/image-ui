@@ -16,7 +16,12 @@ A fast, lightweight desktop image viewer system application built with [V](https
 
 ### Prerequisites
 - [V compiler](https://github.com/vlang/v) (latest master or release)
-- `ui` module (`v install ui`)
+- The `ui2` fork submodule — clone with submodules:
+```bash
+git clone --recurse-submodules https://github.com/threehymns/image-ui.git
+# or, inside an existing checkout:
+git submodule update --init
+```
 - Wayland development libraries (on Linux Wayland sessions: `wayland-client`, `wayland-cursor`, `wayland-egl`, `xkbcommon`)
 
 ### Build Commands
@@ -43,7 +48,7 @@ Or using the V compiler directly:
 
 ### Running Tests
 ```bash
-v test .
+make test
 ```
 
 ## Architecture & Domain Model
