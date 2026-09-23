@@ -3,219 +3,51 @@ module main
 import os
 import math
 import time
-import ui
+import ui2
 import gg
-import sokol.sapp
-import sokol.gfx
-
-// Subtle neutral colors for alpha checkerboard rendering
-pub const checker_color_dark = gg.Color{
-	r: 36
-	g: 36
-	b: 38
-	a: 255
-}
-
-pub const checker_color_light = gg.Color{
-	r: 48
-	g: 48
-	b: 52
-	a: 255
-}
+import stbi
 
 // Background for the canvas area outside the image
-pub const canvas_bg_color = gg.Color{
-	r: 20
-	g: 20
-	b: 22
-	a: 255
-}
+pub const canvas_bg_hex = u32(0x141416)
 
 // Drop target frame and text styling colors
-pub const drop_target_border_color = gg.Color{
-	r: 52
-	g: 52
-	b: 58
-	a: 255
-}
-
-pub const drop_target_text_color = gg.Color{
-	r: 160
-	g: 160
-	b: 168
-	a: 255
-}
-
-pub const drop_target_subtext_color = gg.Color{
-	r: 100
-	g: 100
-	b: 108
-	a: 255
-}
-
-pub const error_text_color = gg.Color{
-	r: 220
-	g: 90
-	b: 90
-	a: 255
-}
+pub const drop_target_border_hex = u32(0x34343a)
+pub const drop_target_text_hex = u32(0xa0a0a8)
+pub const drop_target_subtext_hex = u32(0x64646c)
+pub const error_text_hex = u32(0xdc5a5a)
 
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	window          &ui.Window = unsafe { nil }
 	core            App
-	image           gg.Image
-	sampler_linear  gfx.Sampler
-	sampler_nearest gfx.Sampler
-	samplers_init   bool
+	window_ready    bool
 	is_dragging     bool
-	drag_prev_x     f32
-	drag_prev_y     f32
+	drag_prev_x     f64
+	drag_prev_y     f64
 	last_click_time i64
-	last_click_x    f32
-	last_click_y    f32
+	last_click_x    f64
+	last_click_y    f64
 	scanned_dir     string
 	scanner_ch      chan SiblingBatch
 	has_scanner_ch  bool
 }
 
-// init_samplers allocates bilinear and nearest-neighbor Sokol samplers.
-pub fn (mut app ViewerApp) init_samplers() {
-	if app.samplers_init {
-		return
-	}
-	mut smp_linear := gfx.SamplerDesc{
-		min_filter:    .linear
-		mag_filter:    .linear
-		mipmap_filter: .linear
-		wrap_u:        .clamp_to_edge
-		wrap_v:        .clamp_to_edge
-	}
-	app.sampler_linear = gfx.make_sampler(&smp_linear)
-
-	mut smp_nearest := gfx.SamplerDesc{
-		min_filter:    .nearest
-		mag_filter:    .nearest
-		mipmap_filter: .linear
-		wrap_u:        .clamp_to_edge
-		wrap_v:        .clamp_to_edge
-	}
-	app.sampler_nearest = gfx.make_sampler(&smp_nearest)
-	app.samplers_init = true
-}
-
-// is_shared_sampler reports whether smp is one of the two long-lived
-// shared samplers. Shared samplers must never be destroyed on image switch.
-fn (app &ViewerApp) is_shared_sampler(smp gfx.Sampler) bool {
-	if !app.samplers_init || smp.id == 0 {
-		return false
-	}
-	return smp.id == app.sampler_linear.id || smp.id == app.sampler_nearest.id
-}
-
-// free_current_image releases GPU resources of the previously displayed image
-// without touching the shared samplers. Sokol sampler pool is only 64 entries
-// and the image pool 128, so every sibling switch must free the old handles
-// or rapid arrow-key navigation exhausts the pools (SAMPLER_POOL_EXHAUSTED).
-fn (mut app ViewerApp) free_current_image() {
-	if !app.image.simg_ok || app.image.simg.id == 0 {
-		return
-	}
-	if app.window == unsafe { nil } {
-		app.image = gg.Image{}
-		return
-	}
-	old_id := app.image.id
-	old_ssmp := app.image.ssmp
-	mut gg_ctx := app.window.ui.gg
-	mut cached := gg_ctx.get_cached_image_by_idx(old_id)
-	if cached.ok {
-		cached_ssmp := cached.ssmp
-		// Detach shared sampler so remove_cached_image_by_idx does not destroy it.
-		if app.is_shared_sampler(cached_ssmp) {
-			cached.ssmp = gfx.Sampler{}
-		}
-		gg_ctx.remove_cached_image_by_idx(old_id)
-		// In the in-sync case app.image and the cache share one owned handle
-		// which remove just destroyed exactly once. Only free app.image's
-		// sampler when it is a distinct owned handle (out-of-sync safety).
-		if old_ssmp.id != 0 && old_ssmp.id != cached_ssmp.id && !app.is_shared_sampler(old_ssmp) {
-			gfx.destroy_sampler(old_ssmp)
-		}
-	} else {
-		gfx.destroy_image(app.image.simg)
-		if !app.is_shared_sampler(old_ssmp) && old_ssmp.id != 0 {
-			gfx.destroy_sampler(old_ssmp)
-		}
-	}
-	app.image = gg.Image{}
-}
-
-// draw_checkerboard renders the subtle neutral checkerboard grid clipped to visible canvas.
-pub fn draw_checkerboard(ctx &gg.Context, x f32, y f32, w f32, h f32, cell_size f32, canvas_w int, canvas_h int) {
-	if w <= 0 || h <= 0 || canvas_w <= 0 || canvas_h <= 0 {
-		return
-	}
-	sz := if cell_size > 0 { cell_size } else { default_checker_size }
-
-	// Calculate intersection of image bounds and visible canvas area
-	vis_x0 := math.max(f32(0.0), x)
-	vis_y0 := math.max(f32(0.0), y)
-	vis_x1 := math.min(f32(canvas_w), x + w)
-	vis_y1 := math.min(f32(canvas_h), y + h)
-
-	if vis_x0 >= vis_x1 || vis_y0 >= vis_y1 {
-		return
-	}
-
-	// Draw base dark neutral rectangle covering only the visible portion of the image
-	ctx.draw_rect_filled(vis_x0, vis_y0, vis_x1 - vis_x0, vis_y1 - vis_y0, checker_color_dark)
-
-	// Draw alternating lighter tiles clipped at the boundary
-	start_col := int(math.floor((vis_x0 - x) / sz))
-	start_row := int(math.floor((vis_y0 - y) / sz))
-
-	mut cur_y := y + f32(start_row) * sz
-	mut row := start_row
-	for cur_y < vis_y1 {
-		cell_y0 := math.max(vis_y0, cur_y)
-		cell_y1 := math.min(vis_y1, cur_y + sz)
-		cell_h := cell_y1 - cell_y0
-
-		mut cur_x := x + f32(start_col) * sz
-		mut col := start_col
-		for cur_x < vis_x1 {
-			if (row + col) % 2 != 0 {
-				cell_x0 := math.max(vis_x0, cur_x)
-				cell_x1 := math.min(vis_x1, cur_x + sz)
-				cell_w := cell_x1 - cell_x0
-				ctx.draw_rect_filled(cell_x0, cell_y0, cell_w, cell_h, checker_color_light)
-			}
-			cur_x += sz
-			col++
-		}
-		cur_y += sz
-		row++
-	}
-}
-
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
 pub fn (mut app ViewerApp) update_window_title() {
-	if app.window == unsafe { nil } {
+	if !app.window_ready {
 		return
 	}
 	if app.core.has_image {
 		title := format_window_title_with_index(
 			app.core.target_path,
-			app.image.width,
-			app.image.height,
+			app.core.img_width,
+			app.core.img_height,
 			app.core.active_index,
 			app.core.playlist.len,
 		)
-		app.window.set_title(title)
+		gg.set_window_title(title)
 	} else {
-		app.window.set_title('image-ui')
+		gg.set_window_title('image-ui')
 	}
 }
 
@@ -248,25 +80,15 @@ pub fn (mut app ViewerApp) poll_scanner() {
 }
 
 pub fn (mut app ViewerApp) load_image(path string) {
-	// Release previous GPU image before switching or showing an error card.
-	// Without this, each sibling switch leaks 1 sokol image + 1 sampler and
-	// rapid arrow-key navigation exhausts the 64-entry sampler pool.
-	app.free_current_image()
 	if path == '' {
 		app.core.set_error('', '')
 		app.update_window_title()
-		if app.window != unsafe { nil } {
-			app.window.refresh()
-		}
 		return
 	}
 
 	if !os.exists(path) {
 		app.core.set_error(path, 'File not found: ${path}')
 		app.update_window_title()
-		if app.window != unsafe { nil } {
-			app.window.refresh()
-		}
 		return
 	}
 
@@ -277,9 +99,6 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		first_img := find_first_image_in_dir(path) or {
 			app.core.set_error(path, 'No supported images found in directory: ${path}')
 			app.update_window_title()
-			if app.window != unsafe { nil } {
-				app.window.refresh()
-			}
 			return
 		}
 		img_path = first_img
@@ -288,56 +107,22 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		dir_path = os.dir(path)
 	}
 
-	mut gg_ctx := app.window.ui.gg
-	// NOTE: gg.Context.create_image pushes into image_cache BEFORE
-	// init_sokol_image, leaving the cached copy (which draw_image_with_config
-	// actually renders from) with simg_ok=false for any image created after
-	// startup. create_image_from_byte_array inits BEFORE caching, so load via
-	// bytes to keep the cache entry valid across sibling navigation.
 	img_bytes := os.read_bytes(img_path) or {
 		app.core.set_error(img_path, 'Unable to read image: ${err.msg()}')
 		app.update_window_title()
-		if app.window != unsafe { nil } {
-			app.window.refresh()
-		}
 		return
-	}
-	loaded_img := gg_ctx.create_image_from_byte_array(img_bytes) or {
-		app.core.set_error(img_path, 'Unable to load image: ${err.msg()}')
-		app.update_window_title()
-		if app.window != unsafe { nil } {
-			app.window.refresh()
-		}
-		return
-	}
-	// init_sokol_image allocates one sampler per image. Keep only the shared
-	// linear/nearest samplers for the app lifetime; otherwise every navigation
-	// leaks its owned sampler into the 64-entry pool.
-	mut new_img := loaded_img
-	app.init_samplers()
-	if app.samplers_init && new_img.simg_ok && new_img.ssmp.id != 0 {
-		owned_ssmp := new_img.ssmp
-		new_img.ssmp = app.sampler_linear
-		mut new_cached := gg_ctx.get_cached_image_by_idx(new_img.id)
-		if new_cached.ok {
-			new_cached.ssmp = app.sampler_linear
-		}
-		if owned_ssmp.id != app.sampler_linear.id && owned_ssmp.id != app.sampler_nearest.id {
-			gfx.destroy_sampler(owned_ssmp)
-		}
-	}
-	// Belt-and-braces: draw_image_with_config renders ctx.image_cache[id],
-	// not the returned struct, so sync GPU handles into the cache entry.
-	mut cached := gg_ctx.get_cached_image_by_idx(new_img.id)
-	if !cached.simg_ok && new_img.simg_ok {
-		cached.simg = new_img.simg
-		cached.ssmp = new_img.ssmp
-		cached.simg_ok = true
-		cached.ok = true
 	}
 
-	app.image = new_img
-	app.core.set_image_loaded(img_path, new_img.width, new_img.height)
+	stbi_img := stbi.load_from_memory(img_bytes.data, img_bytes.len, stbi.LoadParams{}) or {
+		app.core.set_error(img_path, 'Unable to load image: ${err.msg()}')
+		app.update_window_title()
+		return
+	}
+	img_w := stbi_img.width
+	img_h := stbi_img.height
+	stbi_img.free()
+
+	app.core.set_image_loaded(img_path, img_w, img_h)
 
 	// If scanning a new directory, spawn background worker channel
 	clean_dir := os.real_path(dir_path)
@@ -351,260 +136,330 @@ pub fn (mut app ViewerApp) load_image(path string) {
 	}
 
 	app.update_window_title()
-	if app.window != unsafe { nil } {
-		app.window.refresh()
-	}
 }
 
-pub fn (mut app ViewerApp) win_init(w &ui.Window) {
-	app.window = unsafe { w }
-	if app.core.target_path != '' {
-		app.load_image(app.core.target_path)
+pub fn (mut app ViewerApp) build_screen() ui2.Element {
+	app.poll_scanner()
+	if !app.window_ready {
+		app.window_ready = true
+		if app.core.target_path != '' {
+			app.load_image(app.core.target_path)
+		} else {
+			app.update_window_title()
+		}
+	}
+
+	bounds := ui2.bounds()
+	win_w := int(bounds.width)
+	win_h := int(bounds.height)
+	if win_w > 0 && win_h > 0 {
+		app.core.set_canvas_size(win_w, win_h)
+	}
+
+	if app.core.has_image {
+		img_rect, _, _, _ := get_draw_image_params(
+			app.core.viewport,
+			app.core.img_width,
+			app.core.img_height,
+		)
+		// ui2's rotation is clockwise degrees while get_draw_image_params
+		// reports sokol's counterclockwise convention, so pass the viewport
+		// rotation directly instead of the negated draw angle.
+		norm_rot := (app.core.viewport.rotation % 360 + 360) % 360
+		// The image itself stays non-interactive (clickable=false) so it
+		// contributes no hit target: ui2 only emits pointer:drag for
+		// draggable targets, and a clickable-only image on top would swallow
+		// the gesture and break click-and-drag panning. All pointer gestures
+		// fall through to the draggable canvas below.
+		mut img_el := ui2.transformed_image(
+			'viewport_image',
+			app.core.target_path,
+			ui2.rect(f64(img_rect.x), f64(img_rect.y), f64(img_rect.width), f64(img_rect.height)),
+			f64(norm_rot),
+			false,
+		)
+		// Horizontal/vertical mirroring lost in the ui2 port: re-declare it
+		// so the h/v keys take visible effect again.
+		if app.core.viewport.flip_h {
+			img_el = ui2.with_flip_h(img_el)
+		}
+		if app.core.viewport.flip_v {
+			img_el = ui2.with_flip_v(img_el)
+		}
+		// Magnification past 200% samples nearest-neighbor (crisp pixels);
+		// at or below that the default bilinear filtering applies.
+		if app.core.filter_mode == .nearest {
+			img_el = ui2.with_pixelated(img_el)
+		}
+
+		return ui2.screen(canvas_bg_hex, [
+			ui2.draggable_view_with_cursor('canvas_bg', bounds, ui2.BoxStyle{ transparent: true }, 'pointing_hand', [
+				img_el,
+			]),
+		])
+	}
+
+	// Empty drop target
+	target_w := f64(if win_w - 120 < 420 { math.max(120, win_w - 60) } else { 420 })
+	target_h := f64(if win_h - 120 < 260 { math.max(80, win_h - 60) } else { 260 })
+	target_x := (f64(win_w) - target_w) / 2.0
+	target_y := (f64(win_h) - target_h) / 2.0
+
+	mut target_children := []ui2.Element{}
+
+	if app.core.error_msg != '' {
+		target_children << ui2.label(
+			'err_label',
+			app.core.error_msg,
+			ui2.rect(0, target_h / 2.0 - 24, target_w, 24),
+			ui2.TextStyle{
+				size:  14
+				color: error_text_hex
+				align: .center
+			},
+		)
+		target_children << ui2.label(
+			'err_sublabel',
+			'Drop another image or open via CLI',
+			ui2.rect(0, target_h / 2.0 + 8, target_w, 20),
+			ui2.TextStyle{
+				size:  13
+				color: drop_target_subtext_hex
+				align: .center
+			},
+		)
 	} else {
-		app.update_window_title()
+		// Subtle geometric icon in the center
+		icon_sz := 36.0
+		icon_x := (target_w - icon_sz) / 2.0
+		icon_y := target_h / 2.0 - 48.0
+		target_children << ui2.view(
+			'icon_box',
+			ui2.rect(icon_x, icon_y, icon_sz, icon_sz * 0.75),
+			ui2.BoxStyle{
+				border_color:  drop_target_border_hex
+				border_left:   1
+				border_top:    1
+				border_right:  1
+				border_bottom: 1
+				transparent:   true
+				radius:        2
+			},
+			[],
+		)
+		target_children << ui2.label(
+			'prompt_label',
+			'Drop image here to view',
+			ui2.rect(0, target_h / 2.0 + 4, target_w, 24),
+			ui2.TextStyle{
+				size:  15
+				color: drop_target_text_hex
+				align: .center
+			},
+		)
+		target_children << ui2.label(
+			'subprompt_label',
+			'or run: image-ui <path>',
+			ui2.rect(0, target_h / 2.0 + 30, target_w, 20),
+			ui2.TextStyle{
+				size:  13
+				color: drop_target_subtext_hex
+				align: .center
+			},
+		)
 	}
+
+	frame_box := ui2.view(
+		'target_frame',
+		ui2.rect(target_x, target_y, target_w, target_h),
+		ui2.BoxStyle{
+			border_color:  drop_target_border_hex
+			border_left:   1
+			border_top:    1
+			border_right:  1
+			border_bottom: 1
+			transparent:   true
+			radius:        6
+		},
+		target_children,
+	)
+
+	return ui2.screen(canvas_bg_hex, [frame_box])
 }
 
-pub fn (mut app ViewerApp) on_files_dropped(w &ui.Window, e ui.MouseEvent) {
-	num_files := sapp.get_num_dropped_files()
-	if num_files > 0 {
-		dropped_path := sapp.get_dropped_file_path(0)
-		if dropped_path != '' {
-			app.load_image(dropped_path)
+fn parse_pointer_event(event string) ?(string, string, f64, f64) {
+	parts := event.split(':')
+	if parts.len < 5 || parts[0] != 'pointer' {
+		return none
+	}
+	return parts[1], parts[2], parts[3].f64(), parts[4].f64()
+}
+
+// parse_scroll_event decodes the 'scroll:<cursor_x>:<cursor_y>:<delta_y>'
+// wire format emitted for wheel and trackpad scroll gestures that no
+// scrollable view consumes. Trackpad pinch-to-zoom arrives on this channel
+// as well (Ctrl+scroll on the desktop backends).
+fn parse_scroll_event(event string) ?(f64, f64, f64) {
+	parts := event.split(':')
+	if parts.len != 4 || parts[0] != 'scroll' {
+		return none
+	}
+	return parts[1].f64(), parts[2].f64(), parts[3].f64()
+}
+
+// handle_scroll zooms the viewport anchored at the cursor position,
+// restoring the wheel/trackpad-to-zoom gesture lost in the ui2 port.
+// Positive delta_y (wheel up, trackpad scroll up, pinch out) zooms in and
+// negative delta_y zooms out. The factor follows zoom_step_factor ^ delta_y
+// so a discrete notch (|delta| == 1) reproduces the legacy single-step zoom
+// exactly, while fractional high-resolution trackpad deltas scale smoothly.
+pub fn (mut app ViewerApp) handle_scroll(cursor_x f64, cursor_y f64, delta_y f64) {
+	if !app.core.has_image {
+		return
+	}
+	if delta_y == 0 {
+		return
+	}
+	factor := f32(math.pow(f64(zoom_step_factor), delta_y))
+	app.core.zoom_at(f32(cursor_x), f32(cursor_y), factor)
+}
+
+pub fn (mut app ViewerApp) handle_event(event string) {
+	if event.starts_with('scroll:') {
+		x, y, delta := parse_scroll_event(event) or { return }
+		app.handle_scroll(x, y, delta)
+		return
+	}
+	phase, id, x, y := parse_pointer_event(event) or { return }
+	if id != 'viewport_image' && id != 'canvas_bg' {
+		return
+	}
+
+	if phase == 'down' {
+		app.is_dragging = true
+		app.drag_prev_x = x
+		app.drag_prev_y = y
+	} else if phase == 'drag' {
+		if !app.is_dragging {
+			app.is_dragging = true
+			app.drag_prev_x = x
+			app.drag_prev_y = y
+			return
+		}
+		dx := x - app.drag_prev_x
+		dy := y - app.drag_prev_y
+		app.drag_prev_x = x
+		app.drag_prev_y = y
+		app.core.pan(f32(dx), f32(dy))
+	} else if phase == 'up' {
+		app.is_dragging = false
+		now := time.ticks()
+		dt := now - app.last_click_time
+		dx := math.abs(x - app.last_click_x)
+		dy := math.abs(y - app.last_click_y)
+		if dt < 400 && dx <= 5.0 && dy <= 5.0 {
+			app.core.toggle_zoom_fit_actual()
+			app.last_click_time = 0
+		} else {
+			app.last_click_time = now
+			app.last_click_x = x
+			app.last_click_y = y
 		}
 	}
 }
 
-pub fn (mut app ViewerApp) on_key_down(w &ui.Window, e ui.KeyEvent) {
+pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 	if !app.core.has_image && app.core.playlist.len == 0 {
 		return
 	}
-
 	app.poll_scanner()
 
-	mut changed := false
-	if e.key == .left {
-		if app.core.prev_sibling() {
-			app.load_image(app.core.target_path)
-		}
-	} else if e.key == .right {
-		if app.core.next_sibling() {
-			app.load_image(app.core.target_path)
-		}
-	} else if e.key == .up {
-		if app.core.prev_secondary_step() {
-			app.load_image(app.core.target_path)
-		}
-	} else if e.key == .down {
-		if app.core.next_secondary_step() {
-			app.load_image(app.core.target_path)
-		}
-	} else if e.key == .page_up {
-		if app.core.prev_secondary_step() {
-			app.load_image(app.core.target_path)
-		}
-	} else if e.key == .page_down {
-		if app.core.next_secondary_step() {
-			app.load_image(app.core.target_path)
-		}
-	} else if e.key == .r {
-		if e.mods.has(.shift) {
-			app.core.rotate_ccw()
-		} else {
-			app.core.rotate_cw()
-		}
-		changed = true
-	} else if e.key == .h {
-		app.core.flip_h()
-		changed = true
-	} else if e.key == .v {
-		app.core.flip_v()
-		changed = true
-	} else if e.key == .f {
-		app.core.zoom_fit()
-		changed = true
-	} else if e.key == ._0 || e.key == .kp_0 {
-		app.core.zoom_actual()
-		changed = true
-	}
-
-	if changed && app.window != unsafe { nil } {
-		app.window.refresh()
-	}
-}
-
-pub fn (mut app ViewerApp) on_canvas_scroll(c &ui.CanvasLayout, e ui.ScrollEvent) {
-	if !app.core.has_image {
-		return
-	}
-	cursor_x := f32(e.mouse_x)
-	cursor_y := f32(e.mouse_y)
-	delta := f32(e.y)
-	if delta != 0 {
-		factor := if delta > 0 { zoom_step_factor } else { f32(1.0 / zoom_step_factor) }
-		app.core.zoom_at(cursor_x, cursor_y, factor)
-		if app.window != unsafe { nil } {
-			app.window.refresh()
-		}
-	}
-}
-
-pub fn (mut app ViewerApp) on_canvas_mouse_down(c &ui.CanvasLayout, e ui.MouseEvent) {
-	if !app.core.has_image {
-		return
-	}
-	if e.button == .left {
-		app.is_dragging = true
-		app.drag_prev_x = f32(e.x)
-		app.drag_prev_y = f32(e.y)
-	}
-}
-
-pub fn (mut app ViewerApp) on_canvas_mouse_up(c &ui.CanvasLayout, e ui.MouseEvent) {
-	if e.button == .left {
-		app.is_dragging = false
-	}
-}
-
-pub fn (mut app ViewerApp) on_canvas_mouse_move(c &ui.CanvasLayout, e ui.MouseMoveEvent) {
-	if !app.core.has_image || !app.is_dragging {
-		return
-	}
-	dx := f32(e.x) - app.drag_prev_x
-	dy := f32(e.y) - app.drag_prev_y
-	app.drag_prev_x = f32(e.x)
-	app.drag_prev_y = f32(e.y)
-
-	app.core.pan(dx, dy)
-	if app.window != unsafe { nil } {
-		app.window.refresh()
-	}
-}
-
-pub fn (mut app ViewerApp) on_canvas_click(c &ui.CanvasLayout, e ui.MouseEvent) {
-	if !app.core.has_image {
-		return
-	}
-	now := time.ticks()
-	dt := now - app.last_click_time
-	dx := math.abs(f32(e.x) - app.last_click_x)
-	dy := math.abs(f32(e.y) - app.last_click_y)
-
-	// Double-click threshold: within 400ms and 5px radius
-	if dt < 400 && dx <= 5.0 && dy <= 5.0 {
-		app.core.toggle_zoom_fit_actual()
-		app.last_click_time = 0
-		if app.window != unsafe { nil } {
-			app.window.refresh()
-		}
-	} else {
-		app.last_click_time = now
-		app.last_click_x = f32(e.x)
-		app.last_click_y = f32(e.y)
-	}
-}
-
-pub fn (mut app ViewerApp) draw_canvas(mut d ui.DrawDevice, c &ui.CanvasLayout) {
-	mut ctx := c.ui.gg
-	canvas_w := c.width
-	canvas_h := c.height
-
-	app.poll_scanner()
-	app.init_samplers()
-	app.core.set_canvas_size(canvas_w, canvas_h)
-
-	// 1. Fill entire canvas background with neutral dark color
-	ctx.draw_rect_filled(0, 0, f32(canvas_w), f32(canvas_h), canvas_bg_color)
-
-	if app.core.has_image {
-		// Switch between the two shared samplers according to filter mode.
-		// Only reassign on change; blindly overwriting every frame orphaned
-		// the per-image owned sampler from init_sokol_image (1 leak per load).
-		active_sampler := if app.core.filter_mode == .nearest {
-			app.sampler_nearest
-		} else {
-			app.sampler_linear
-		}
-		if app.image.ssmp.id != active_sampler.id {
-			old_ssmp := app.image.ssmp
-			app.image.ssmp = active_sampler
-			mut cached_img := ctx.get_cached_image_by_idx(app.image.id)
-			if cached_img.ok {
-				cached_img.ssmp = active_sampler
-			}
-			// Safety net for images created before the load-time sampler
-			// replacement (or when gfx was invalid at load): free the orphaned
-			// owned sampler exactly once. Shared samplers are never destroyed.
-			if old_ssmp.id != 0 && !app.is_shared_sampler(old_ssmp) {
-				gfx.destroy_sampler(old_ssmp)
+	match e.code {
+		.left {
+			if app.core.prev_sibling() {
+				app.load_image(app.core.target_path)
 			}
 		}
-
-		// 2. Draw subtle neutral checkerboard grid directly under visual image bounds clipped to canvas
-		draw_checkerboard(ctx, app.core.viewport.x, app.core.viewport.y, app.core.viewport.width,
-			app.core.viewport.height, default_checker_size, canvas_w, canvas_h)
-
-		// 3. Draw image with config
-		img_rect, rot_deg, flip_x, flip_y := get_draw_image_params(app.core.viewport,
-			app.image.width, app.image.height)
-		ctx.draw_image_with_config(gg.DrawImageConfig{
-			img:      &app.image
-			img_rect: img_rect
-			rotation: rot_deg
-			flip_x:   flip_x
-			flip_y:   flip_y
-		})
-	} else {
-		// Clean empty viewport drop target
-		app.draw_empty_target(ctx, canvas_w, canvas_h)
+		.right {
+			if app.core.next_sibling() {
+				app.load_image(app.core.target_path)
+			}
+		}
+		.up {
+			if app.core.prev_secondary_step() {
+				app.load_image(app.core.target_path)
+			}
+		}
+		.down {
+			if app.core.next_secondary_step() {
+				app.load_image(app.core.target_path)
+			}
+		}
+		.page_up {
+			if app.core.prev_secondary_step() {
+				app.load_image(app.core.target_path)
+			}
+		}
+		.page_down {
+			if app.core.next_secondary_step() {
+				app.load_image(app.core.target_path)
+			}
+		}
+		.r {
+			if e.shift {
+				app.core.rotate_ccw()
+			} else {
+				app.core.rotate_cw()
+			}
+		}
+		.h {
+			app.core.flip_h()
+		}
+		.v {
+			app.core.flip_v()
+		}
+		.f {
+			app.core.zoom_fit()
+		}
+		._0, .kp_0 {
+			app.core.zoom_actual()
+		}
+		.equal, .kp_add {
+			app.core.zoom_in()
+		}
+		.minus, .kp_subtract {
+			app.core.zoom_out()
+		}
+		else {}
 	}
 }
 
-pub fn (app &ViewerApp) draw_empty_target(ctx &gg.Context, canvas_w int, canvas_h int) {
-	target_w := f32(if canvas_w - 120 < 420 { math.max(120, canvas_w - 60) } else { 420 })
-	target_h := f32(if canvas_h - 120 < 260 { math.max(80, canvas_h - 60) } else { 260 })
-	target_x := (f32(canvas_w) - target_w) / 2.0
-	target_y := (f32(canvas_h) - target_h) / 2.0
-
-	// Draw subtle drop target bounding frame
-	ctx.draw_rect_empty(target_x, target_y, target_w, target_h, drop_target_border_color)
-
-	center_x := int(f32(canvas_w) / 2.0)
-	center_y := int(f32(canvas_h) / 2.0)
-
-	if app.core.error_msg != '' {
-		ctx.draw_text(center_x, center_y - 20, app.core.error_msg, gg.TextCfg{
-			size:           14
-			color:          error_text_color
-			align:          .center
-			vertical_align: .middle
-		})
-		ctx.draw_text(center_x, center_y + 16, 'Drop another image or open via CLI', gg.TextCfg{
-			size:           13
-			color:          drop_target_subtext_color
-			align:          .center
-			vertical_align: .middle
-		})
-	} else {
-		// Subtle geometric icon in the center: inner frame / image glyph
-		icon_sz := f32(36.0)
-		icon_x := f32(center_x) - icon_sz / 2.0
-		icon_y := f32(center_y) - 44.0
-		ctx.draw_rect_empty(icon_x, icon_y, icon_sz, icon_sz * 0.75, drop_target_border_color)
-
-		ctx.draw_text(center_x, center_y + 6, 'Drop image here to view', gg.TextCfg{
-			size:           15
-			color:          drop_target_text_color
-			align:          .center
-			vertical_align: .middle
-		})
-		ctx.draw_text(center_x, center_y + 32, 'or run: image-ui <path>', gg.TextCfg{
-			size:           13
-			color:          drop_target_subtext_color
-			align:          .center
-			vertical_align: .middle
-		})
+pub fn (mut app ViewerApp) handle_drop(e ui2.DropEvent) {
+	if e.paths.len > 0 {
+		app.load_image(e.paths[0])
 	}
+}
+
+const global_viewer_app = &ViewerApp{}
+
+fn build_viewer_screen() ui2.Element {
+	mut app := unsafe { global_viewer_app }
+	return app.build_screen()
+}
+
+fn handle_viewer_event(event string) {
+	mut app := unsafe { global_viewer_app }
+	app.handle_event(event)
+}
+
+fn handle_viewer_key(e ui2.KeyEvent) {
+	mut app := unsafe { global_viewer_app }
+	app.handle_key_event(e)
+}
+
+fn handle_viewer_drop(e ui2.DropEvent) {
+	mut app := unsafe { global_viewer_app }
+	app.handle_drop(e)
 }
 
 fn main() {
@@ -616,31 +471,12 @@ fn main() {
 // launch_viewer boots the desktop viewer for the given image path.
 // An empty path starts with the empty drop target.
 pub fn launch_viewer(image_path string) {
-	mut app := &ViewerApp{
-		core: App{
-			target_path: image_path
-		}
-	}
+	mut app := unsafe { global_viewer_app }
+	app.core = new_app()
+	app.core.target_path = image_path
 
-	app.window = ui.window(
-		width:            1024
-		height:           768
-		title:            'image-ui'
-		mode:             .resizable
-		on_init:          app.win_init
-		on_files_dropped: app.on_files_dropped
-		on_key_down:      app.on_key_down
-		enable_dragndrop: true
-		layout:           ui.canvas_layout(
-			id:            'viewport_canvas'
-			on_draw:       app.draw_canvas
-			on_click:      app.on_canvas_click
-			on_mouse_down: app.on_canvas_mouse_down
-			on_mouse_up:   app.on_canvas_mouse_up
-			on_mouse_move: app.on_canvas_mouse_move
-			on_scroll:     app.on_canvas_scroll
-		)
-	)
+	ui2.on_key_event(handle_viewer_key)
+	ui2.on_drop(handle_viewer_drop)
 
-	ui.run(app.window)
+	ui2.run_window('image-ui', 1024, 768, build_viewer_screen, handle_viewer_event)
 }

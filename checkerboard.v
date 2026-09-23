@@ -2,8 +2,6 @@ module main
 
 import math
 
-pub const default_checker_size = f32(16.0)
-
 pub struct CheckerCell {
 pub:
 	x      f32
