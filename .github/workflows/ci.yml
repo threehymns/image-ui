@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: Build and test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # Use the official 0.5.2 release binaries rather than bootstrapping from
+      # source: V master currently fails the source bootstrap on hosted runners.
+      # 0.5.2 is also the toolchain the project is developed against.
+      - name: Setup V
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/v.zip" \
+            "https://github.com/vlang/v/releases/download/0.5.2/v_linux.zip"
+          unzip -q "$RUNNER_TEMP/v.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/v/v" version
+
+      # The ui2 fork is a submodule: without it `import ui2` does not resolve.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --quiet -y --no-install-recommends \
+            libx11-dev libxcursor-dev libxi-dev libgl1-mesa-dev libasound2-dev
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        # Headless-safe: the suite never opens a window, and the test target
+        # does not enable the Wayland backend, so no display server is needed.
+        run: make test
