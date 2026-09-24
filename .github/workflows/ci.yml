@@ -1,7 +1,12 @@
 name: CI
 
 on:
+  # Feature branches (same-repo or forks) are covered by the pull_request
+  # event; running push for them too would duplicate every PR run. Push
+  # runs only on main so merges are still tested.
   push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
