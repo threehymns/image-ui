@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,19 +15,43 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      # Build the toolchain from the threehymns/v fork (branch dev), which
+      # Toolchain comes from the threehymns/v fork (branch dev), which
       # carries patches stock releases lack (sokol Wayland Shift+letter
-      # fold, V3 forward-typedef fix). Building from source also proves the
-      # fork itself still bootstraps. See README "Forks & upstream".
-      - name: Setup V
+      # fold, V3 forward-typedef fix). It is built from source and cached
+      # per fork commit under an exact key, so a stale toolchain is never
+      # used. See README "Forks & upstream".
+      - name: Resolve fork toolchain commit
+        id: vfork
         shell: bash
         run: |
+          sha=$(git ls-remote https://github.com/threehymns/v.git refs/heads/dev | cut -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached toolchain
+        id: vcache
+        uses: actions/cache@v4
+        with:
+          path: ~/v-fork
+          key: v-fork-${{ runner.os }}-${{ steps.vfork.outputs.sha }}
+
+      - name: Setup V
+        shell: bash
+        if: steps.vcache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf ~/v-fork
           git clone --depth 1 --branch dev \
             "https://github.com/threehymns/v.git" \
-            "$RUNNER_TEMP/vlang"
-          make -C "$RUNNER_TEMP/vlang"
-          echo "$RUNNER_TEMP/vlang" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/vlang/v" version
+            ~/v-fork
+          make -C ~/v-fork
+          # Slim the tree before it is cached: bootstrap sources and git
+          # metadata are never read at toolchain runtime.
+          rm -rf ~/v-fork/.git ~/v-fork/vc
+
+      - name: Add toolchain to PATH
+        shell: bash
+        run: |
+          echo "$HOME/v-fork" >> "$GITHUB_PATH"
+          "$HOME/v-fork/v" version
 
       # The ui2 fork is a submodule: without it `import ui2` does not resolve.
       - uses: actions/checkout@v4
