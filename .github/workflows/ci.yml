@@ -14,18 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      # Use the official 0.5.2 release binaries rather than bootstrapping from
-      # source: V master currently fails the source bootstrap on hosted runners.
-      # 0.5.2 is also the toolchain the project is developed against.
+      # Build the toolchain from the threehymns/v fork (branch dev), which
+      # carries patches stock releases lack (sokol Wayland Shift+letter
+      # fold, V3 forward-typedef fix). Building from source also proves the
+      # fork itself still bootstraps. See README "Forks & upstream".
       - name: Setup V
         shell: bash
         run: |
-          curl --fail --location --retry 3 \
-            --output "$RUNNER_TEMP/v.zip" \
-            "https://github.com/vlang/v/releases/download/0.5.2/v_linux.zip"
-          unzip -q "$RUNNER_TEMP/v.zip" -d "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/v/v" version
+          git clone --depth 1 --branch dev \
+            "https://github.com/threehymns/v.git" \
+            "$RUNNER_TEMP/vlang"
+          make -C "$RUNNER_TEMP/vlang"
+          echo "$RUNNER_TEMP/vlang" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/vlang/v" version
 
       # The ui2 fork is a submodule: without it `import ui2` does not resolve.
       - uses: actions/checkout@v4
