@@ -7,16 +7,17 @@ import os
 // without requiring an active OpenGL/Wayland display server.
 pub struct App {
 pub mut:
-	target_path   string
-	has_image     bool
-	img_width     int
-	img_height    int
-	viewport      Viewport
-	canvas_w      int
-	canvas_h      int
-	error_msg     string
-	filter_mode   TextureFilterMode = .linear
-	viewport_init bool
+	target_path      string
+	has_image        bool
+	img_width        int
+	img_height       int
+	viewport         Viewport
+	canvas_w         int
+	canvas_h         int
+	error_msg        string
+	filter_mode      TextureFilterMode = .linear
+	viewport_init    bool
+	show_checkerboard bool = true
 	// Sibling playlist and traversal state
 	playlist      []string
 	active_index  int
@@ -27,7 +28,8 @@ pub mut:
 // new_app initializes a new headless App instance.
 pub fn new_app() App {
 	return App{
-		filter_mode: .linear
+		filter_mode:       .linear
+		show_checkerboard: true
 	}
 }
 
@@ -375,4 +377,9 @@ pub fn (mut app App) flip_v() {
 		return
 	}
 	app.viewport = flip_vertical(app.viewport)
+}
+
+// toggle_checkerboard flips the transparency grid behind the image.
+pub fn (mut app App) toggle_checkerboard() {
+	app.show_checkerboard = !app.show_checkerboard
 }

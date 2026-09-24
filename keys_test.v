@@ -43,3 +43,34 @@ fn test_shift_r_undoes_r() {
 	})
 	assert app.core.viewport.rotation == 0
 }
+
+fn test_t_toggles_checkerboard() {
+	mut app := keys_test_app()
+	assert app.core.show_checkerboard == true
+
+	app.handle_key_event(ui2.KeyEvent{
+		code: .t
+	})
+	assert app.core.show_checkerboard == false
+
+	app.handle_key_event(ui2.KeyEvent{
+		code: .t
+	})
+	assert app.core.show_checkerboard == true
+}
+
+fn test_t_toggle_reflects_in_build_screen() {
+	mut app := keys_test_app()
+	app.window_ready = true
+
+	mut screen := app.build_screen()
+	assert screen.children[0].id == 'checkerboard_layer'
+	assert screen.children[screen.children.len - 1].id == 'canvas_bg'
+
+	app.handle_key_event(ui2.KeyEvent{
+		code: .t
+	})
+	screen = app.build_screen()
+	assert screen.children.len == 1
+	assert screen.children[0].id == 'canvas_bg'
+}

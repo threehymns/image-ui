@@ -16,9 +16,16 @@ fn filter_test_app(canvas_w int, canvas_h int, img_w int, img_h int) &ViewerApp 
 fn viewer_image_element(mut app &ViewerApp) ui2.Element {
 	root := app.build_screen()
 	assert root.kind == .screen
-	assert root.children.len == 1
-	assert root.children[0].children.len == 1
-	return root.children[0].children[0]
+	for layer in root.children {
+		if layer.id == 'canvas_bg' {
+			for child in layer.children {
+				if child.kind == .image && child.id == 'viewport_image' {
+					return child
+				}
+			}
+		}
+	}
+	panic('viewport_image missing')
 }
 
 fn test_build_screen_marks_image_pixelated_above_200_percent() {

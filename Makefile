@@ -1,11 +1,10 @@
 V ?= v
 FLAGS ?=
 
-# Auto-detect Wayland session when WAYLAND_DISPLAY is present and DISPLAY is unset
-ifeq ($(DISPLAY),)
+# Prefer Wayland when WAYLAND_DISPLAY is present, including sessions that also
+# expose DISPLAY through XWayland.
 ifneq ($(WAYLAND_DISPLAY),)
 WAYLAND_FLAG ?= -d sokol_wayland
-endif
 endif
 
 .PHONY: all build build-wayland build-x11 test clean

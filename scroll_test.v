@@ -71,6 +71,13 @@ fn test_handle_event_routes_scroll_wire_format() {
 	assert math.abs(app.core.viewport.scale - 1.0) < 0.01
 }
 
+fn test_handle_event_preserves_fractional_scroll_resolution() {
+	mut app := scroll_test_app()
+	app.handle_event('scroll:300:250:0.001')
+	expected := f32(math.pow(1.15, 0.001))
+	assert math.abs(app.core.viewport.scale - expected) < 0.000001
+}
+
 fn test_handle_event_ignores_malformed_scroll() {
 	mut app := scroll_test_app()
 

@@ -1,5 +1,7 @@
 module main
 
+import ui2
+
 // pan_test_app builds a headless viewer with a 1600x1200 image on a
 // 1000x800 canvas at actual size, so the viewport (-300, -200) has room to
 // pan in every direction.
@@ -23,13 +25,24 @@ fn test_build_screen_canvas_receives_image_area_drags() {
 
 	root := app.build_screen()
 	assert root.kind == .screen
-	assert root.children.len == 1
-
-	canvas := root.children[0]
+	mut canvas := ui2.Element{}
+	for layer in root.children {
+		if layer.id == 'canvas_bg' {
+			canvas = layer
+		}
+	}
 	assert canvas.id == 'canvas_bg'
 	assert canvas.draggable
 
-	assert canvas.children.len == 1
+	mut found_image := false
+	for child in canvas.children {
+		if child.id == 'viewport_image' {
+			assert !child.clickable
+			assert !child.draggable
+			found_image = true
+		}
+	}
+	assert found_image
 	img := canvas.children[0]
 	assert img.id == 'viewport_image'
 	// A clickable-only image would own the hit target on top and swallow

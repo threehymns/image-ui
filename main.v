@@ -27,9 +27,15 @@ pub mut:
 	last_click_time i64
 	last_click_x    f64
 	last_click_y    f64
-	scanned_dir     string
-	scanner_ch      chan SiblingBatch
-	has_scanner_ch  bool
+	scanned_dir          string
+	scanner_ch           chan SiblingBatch
+	has_scanner_ch       bool
+	requested_window_w   int
+	requested_window_h   int
+	checkerboard_key          string
+	checkerboard_pending_key  string
+	checkerboard_stable_frames int
+	checkerboard_layer        ui2.Element
 }
 
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
@@ -138,9 +144,43 @@ pub fn (mut app ViewerApp) load_image(path string) {
 	app.update_window_title()
 }
 
+fn (mut app ViewerApp) get_checkerboard_layer(win_w int, win_h int) ui2.Element {
+	key := '${win_w}:${win_h}'
+	if app.checkerboard_key.len == 0 {
+		app.checkerboard_layer = build_checkerboard_layer(win_w, win_h)
+		app.checkerboard_key = key
+		return app.checkerboard_layer
+	}
+
+	app.checkerboard_layer = ui2.Element{
+		...app.checkerboard_layer
+		frame: ui2.rect(0, 0, f64(win_w), f64(win_h))
+	}
+	if key == app.checkerboard_key {
+		app.checkerboard_pending_key = ''
+		app.checkerboard_stable_frames = 0
+		return app.checkerboard_layer
+	}
+	if app.checkerboard_pending_key != key {
+		app.checkerboard_pending_key = key
+		app.checkerboard_stable_frames = 0
+		return app.checkerboard_layer
+	}
+	app.checkerboard_stable_frames++
+	if app.checkerboard_stable_frames < 2 {
+		return app.checkerboard_layer
+	}
+	app.checkerboard_layer = build_checkerboard_layer(win_w, win_h)
+	app.checkerboard_key = key
+	app.checkerboard_pending_key = ''
+	app.checkerboard_stable_frames = 0
+	return app.checkerboard_layer
+}
+
 pub fn (mut app ViewerApp) build_screen() ui2.Element {
 	app.poll_scanner()
-	if !app.window_ready {
+	first_build := !app.window_ready
+	if first_build {
 		app.window_ready = true
 		if app.core.target_path != '' {
 			app.load_image(app.core.target_path)
@@ -149,7 +189,10 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 		}
 	}
 
-	bounds := ui2.bounds()
+	mut bounds := ui2.bounds()
+	if first_build && app.requested_window_w > 0 && app.requested_window_h > 0 {
+		bounds = ui2.rect(0, 0, f64(app.requested_window_w), f64(app.requested_window_h))
+	}
 	win_w := int(bounds.width)
 	win_h := int(bounds.height)
 	if win_w > 0 && win_h > 0 {
@@ -192,11 +235,18 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 			img_el = ui2.with_pixelated(img_el)
 		}
 
-		return ui2.screen(canvas_bg_hex, [
-			ui2.draggable_view_with_cursor('canvas_bg', bounds, ui2.BoxStyle{ transparent: true }, 'pointing_hand', [
-				img_el,
-			]),
-		])
+		// Subtle neutral checkerboard grid directly under visual image bounds,
+		// clipped to canvas. Restores the transparency background lost in the
+		// ui2 port; toggle with the `t` key.
+		mut screen_children := []ui2.Element{}
+		if app.core.show_checkerboard {
+			screen_children << app.get_checkerboard_layer(win_w, win_h)
+			screen_children << checkerboard_mask_elements(app.core.viewport, win_w, win_h)
+		}
+		screen_children << ui2.draggable_view_with_cursor('canvas_bg', bounds,
+			ui2.BoxStyle{ transparent: true }, 'pointing_hand', [img_el])
+
+		return ui2.screen(canvas_bg_hex, screen_children)
 	}
 
 	// Empty drop target
@@ -430,6 +480,9 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 		.minus, .kp_subtract {
 			app.core.zoom_out()
 		}
+		.t {
+			app.core.toggle_checkerboard()
+		}
 		else {}
 	}
 }
@@ -474,6 +527,8 @@ pub fn launch_viewer(image_path string) {
 	mut app := unsafe { global_viewer_app }
 	app.core = new_app()
 	app.core.target_path = image_path
+	app.requested_window_w = 1024
+	app.requested_window_h = 768
 
 	ui2.on_key_event(handle_viewer_key)
 	ui2.on_drop(handle_viewer_drop)
