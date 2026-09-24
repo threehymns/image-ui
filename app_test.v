@@ -238,3 +238,38 @@ fn test_app_open_directory() {
 	assert app.active_index == 0
 	assert app.is_scanning == true
 }
+
+fn test_app_first_image_centered_after_canvas_resize() {
+	// First frame preload initializes the viewport with fallback bounds
+	// before the real window size is known; the pristine viewport must be
+	// recomputed so the first image opens centered.
+	mut app := new_app()
+	app.set_image_loaded('/photos/img1.png', 400, 300)
+	app.set_canvas_size(800, 600)
+	app.set_canvas_size(1024, 768)
+	assert math.abs(app.viewport.x - 312.0) < 0.01
+	assert math.abs(app.viewport.y - 234.0) < 0.01
+	assert app.viewport.scale == 1.0
+}
+
+fn test_app_first_large_image_fit_after_canvas_resize() {
+	mut app := new_app()
+	app.set_image_loaded('/photos/big.png', 1920, 1080)
+	app.set_canvas_size(800, 600)
+	app.set_canvas_size(1024, 768)
+	expected_scale := f32(1024.0) / f32(1920.0)
+	assert math.abs(app.viewport.scale - expected_scale) < 0.001
+	assert math.abs(app.viewport.x - 0.0) < 0.01
+	assert math.abs(app.viewport.y - 96.0) < 0.01
+}
+
+fn test_app_user_zoom_preserved_on_canvas_resize() {
+	mut app := new_app()
+	app.set_image_loaded('/photos/img1.png', 400, 300)
+	app.set_canvas_size(800, 600)
+	app.set_canvas_size(1024, 768)
+	app.zoom_in()
+	zoomed_scale := app.viewport.scale
+	app.set_canvas_size(1280, 800)
+	assert app.viewport.scale == zoomed_scale
+}

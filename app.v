@@ -42,10 +42,34 @@ fn clamp_int(val int, min int, max int) int {
 }
 
 // set_canvas_size updates the canvas dimensions and initializes viewport if needed.
+// If the canvas size changes while the viewport still holds its pristine
+// auto-computed initial value (no user transform yet), the viewport is
+// recomputed for the new size. This covers the first-frame preload where
+// the viewport is initialized with fallback bounds before the real window
+// size is known, ensuring the first image opens centered.
 pub fn (mut app App) set_canvas_size(w int, h int) {
+	old_w := app.canvas_w
+	old_h := app.canvas_h
 	app.canvas_w = w
 	app.canvas_h = h
-	if app.has_image && !app.viewport_init && w > 0 && h > 0 {
+	if !app.has_image || w <= 0 || h <= 0 {
+		return
+	}
+	if !app.viewport_init {
+		app.reset_viewport()
+		return
+	}
+	if (w == old_w && h == old_h) || old_w <= 0 || old_h <= 0 {
+		return
+	}
+	// Only auto-reset pristine viewports; preserve any user transform.
+	if app.viewport.rotation != 0 || app.viewport.flip_h || app.viewport.flip_v {
+		return
+	}
+	expected := calculate_initial_viewport_rotated(old_w, old_h, app.img_width, app.img_height, 0)
+	if app.viewport.x == expected.x && app.viewport.y == expected.y
+		&& app.viewport.width == expected.width && app.viewport.height == expected.height
+		&& app.viewport.scale == expected.scale {
 		app.reset_viewport()
 	}
 }
