@@ -8,18 +8,22 @@ import ui2
 // without requiring an active OpenGL/Wayland display server.
 pub struct App {
 pub mut:
-	target_path       string
-	image_resource    ui2.ImageResource
-	has_image         bool
-	img_width         int
-	img_height        int
-	viewport          Viewport
-	canvas_w          int
-	canvas_h          int
-	error_msg         string
-	filter_mode       TextureFilterMode = .linear
-	viewport_init     bool
-	show_checkerboard bool = true
+	target_path                string
+	image_resource             ui2.ImageResource
+	displayed_resource         ui2.ImageResource
+	image_request_generation   int
+	pending_image_request      ImageRequest
+	committed_image_generation int
+	has_image                  bool
+	img_width                  int
+	img_height                 int
+	viewport                   Viewport
+	canvas_w                   int
+	canvas_h                   int
+	error_msg                  string
+	filter_mode                TextureFilterMode = .linear
+	viewport_init              bool
+	show_checkerboard          bool = true
 	// Sibling playlist and traversal state
 	playlist          []string
 	active_index      int
@@ -88,6 +92,7 @@ fn (mut app App) set_image_metadata(path string, w int, h int) {
 	app.img_height = h
 	app.error_msg = ''
 	app.viewport_init = false
+	app.pending_image_request = ImageRequest{}
 
 	if app.playlist.len == 0 && path != '' {
 		app.playlist = [path]
@@ -107,39 +112,77 @@ fn (mut app App) set_image_metadata(path string, w int, h int) {
 }
 
 pub fn (mut app App) set_image_loaded(path string, w int, h int) {
-	app.image_resource = ui2.legacy_image_resource(path, w, h)
+	resource := ui2.legacy_image_resource(path, w, h)
+	app.image_resource = resource
+	app.displayed_resource = resource
 	app.set_image_metadata(path, w, h)
+}
+
+pub fn (mut app App) request_image(path string, reason string) ImageRequest {
+	app.image_request_generation++
+	request := ImageRequest{
+		generation: app.image_request_generation
+		path:       path
+		reason:     reason
+	}
+	app.pending_image_request = request
+	app.target_path = path
+	app.error_msg = ''
+	app.image_resource = ui2.loading_image_resource('image-request-${request.generation}', path)
+	return request
+}
+
+pub fn (mut app App) commit_image_request(request ImageRequest, resource ui2.ImageResource) bool {
+	if request.generation != app.image_request_generation || request.path != app.target_path {
+		return false
+	}
+	app.set_image_resource(resource)
+	app.pending_image_request = ImageRequest{}
+	if resource.state == .ready {
+		app.committed_image_generation = request.generation
+	}
+	return true
 }
 
 pub fn (mut app App) set_image_resource(resource ui2.ImageResource) {
 	app.image_resource = resource
 	match resource.state {
-		.loading {}
+		.loading {
+			app.error_msg = ''
+		}
 		.ready {
+			app.displayed_resource = resource
 			app.set_image_metadata(resource.source, resource.width(), resource.height())
 		}
 		.error {
 			app.target_path = resource.source
+			app.error_msg = resource.error
+			app.pending_image_request = ImageRequest{}
+			if app.has_image && app.displayed_resource.state == .ready {
+				return
+			}
+			app.displayed_resource = resource
 			app.has_image = false
 			app.has_first_content = false
 			app.img_width = 0
 			app.img_height = 0
-			app.error_msg = resource.error
 			app.viewport_init = false
 		}
 	}
 }
 
-// set_error registers a file load or system failure.
 pub fn (mut app App) set_error(path string, msg string) {
-	app.image_resource = ui2.error_image_resource('', path, msg)
-	app.target_path = path
-	app.has_image = false
-	app.has_first_content = false
-	app.img_width = 0
-	app.img_height = 0
-	app.error_msg = msg
-	app.viewport_init = false
+	app.image_request_generation++
+	app.pending_image_request = ImageRequest{}
+	app.set_image_resource(ui2.error_image_resource('', path, msg))
+}
+
+pub fn (app &App) displayed_image_resource() ui2.ImageResource {
+	return app.displayed_resource
+}
+
+pub fn (app &App) has_pending_image() bool {
+	return app.pending_image_request.generation > 0
 }
 
 fn (mut app App) invalidate_scan() {
@@ -189,6 +232,8 @@ fn merge_sorted_paths(current []string, incoming []string) []string {
 // open_path opens a target image file or directory.
 pub fn (mut app App) open_path(path string) {
 	app.invalidate_scan()
+	app.image_request_generation++
+	app.pending_image_request = ImageRequest{}
 	app.target_path = path
 	app.has_image = false
 	app.has_first_content = false
@@ -276,7 +321,6 @@ pub fn (mut app App) step_sibling(delta int) bool {
 	}
 	app.active_index = target_idx
 	app.target_path = app.playlist[target_idx]
-	app.viewport_init = false
 	return true
 }
 
