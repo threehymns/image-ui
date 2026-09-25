@@ -19,6 +19,7 @@ pub const error_text_hex = u32(0xdc5a5a)
 pub struct ViewerApp {
 pub mut:
 	core                       App
+	image_loader               ImageResourceLoader
 	window_ready               bool
 	is_dragging                bool
 	drag_prev_x                f64
@@ -85,6 +86,12 @@ pub fn (mut app ViewerApp) poll_scanner() {
 	}
 }
 
+fn (mut app ViewerApp) ensure_image_loader() {
+	if voidptr(app.image_loader.decoder) == unsafe { nil } {
+		app.image_loader = new_image_resource_loader(decode_stbi_image)
+	}
+}
+
 pub fn (mut app ViewerApp) load_image(path string) {
 	if path == '' {
 		app.core.set_error('', '')
@@ -98,7 +105,6 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		return
 	}
 
-	// Resolve target image path and parent folder
 	mut img_path := path
 	mut dir_path := ''
 	if os.is_dir(path) {
@@ -113,13 +119,19 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		dir_path = os.dir(path)
 	}
 
-	metadata := load_image_metadata(img_path) or {
-		app.core.set_error(img_path, err.msg())
+	if app.core.image_resource.id.len > 0
+		&& app.core.image_resource.source == img_path
+		&& app.core.image_resource.state == .ready {
 		app.update_window_title()
 		return
 	}
-
-	app.core.set_image_loaded(img_path, metadata.width, metadata.height)
+	app.ensure_image_loader()
+	resource := app.image_loader.load(img_path)
+	app.core.set_image_resource(resource)
+	if resource.state != .ready {
+		app.update_window_title()
+		return
+	}
 
 	// If scanning a new directory, spawn background worker channel
 	clean_dir := os.real_path(dir_path)
@@ -213,13 +225,24 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 		// draggable targets, and a clickable-only image on top would swallow
 		// the gesture and break click-and-drag panning. All pointer gestures
 		// fall through to the draggable canvas below.
-		mut img_el := ui2.transformed_image(
-			'viewport_image',
-			app.core.target_path,
-			ui2.rect(f64(img_rect.x), f64(img_rect.y), f64(img_rect.width), f64(img_rect.height)),
-			f64(norm_rot),
-			false,
-		)
+		mut img_el := if app.core.image_resource.id.len > 0
+			&& app.core.image_resource.state == .ready {
+			ui2.transformed_image_resource(
+				'viewport_image',
+				app.core.image_resource,
+				ui2.rect(f64(img_rect.x), f64(img_rect.y), f64(img_rect.width), f64(img_rect.height)),
+				f64(norm_rot),
+				false,
+			)
+		} else {
+			ui2.transformed_image(
+				'viewport_image',
+				app.core.target_path,
+				ui2.rect(f64(img_rect.x), f64(img_rect.y), f64(img_rect.width), f64(img_rect.height)),
+				f64(norm_rot),
+				false,
+			)
+		}
 		// Horizontal/vertical mirroring lost in the ui2 port: re-declare it
 		// so the h/v keys take visible effect again.
 		if app.core.viewport.flip_h {

@@ -2,7 +2,7 @@ V ?= v
 FLAGS ?=
 BENCHMARK_ARGS ?=
 BENCHMARK_FLAGS ?= -d viewer_benchmark
-BENCHMARK_FILE_LIST ?= benchmark_support.v,benchmark_fixtures.v,benchmark_live.v,image_load.v,main.v,app.v,checkerboard.v,scanner.v,viewport.v
+BENCHMARK_FILE_LIST ?= benchmark_support.v,benchmark_fixtures.v,benchmark_live.v,image_load.v,image_resource.v,main.v,app.v,checkerboard.v,scanner.v,viewport.v
 
 # Prefer Wayland when WAYLAND_DISPLAY is present, including sessions that also
 # expose DISPLAY through XWayland.
@@ -17,7 +17,7 @@ all: build
 # App test files, scoped explicitly: a bare `v test .` would also descend
 # into the ui2 submodule and run its whole suite (including platform-specific
 # tests that fail elsewhere).
-TEST_FILES ?= app_test.v benchmark_test.v checkerboard_test.v cli_test.v filter_test.v flip_test.v keys_test.v pan_test.v scanner_test.v scroll_test.v viewport_test.v
+TEST_FILES ?= app_test.v benchmark_test.v checkerboard_test.v cli_test.v filter_test.v flip_test.v image_resource_test.v keys_test.v pan_test.v scanner_test.v scroll_test.v viewport_test.v
 
 build:
 	$(V) $(WAYLAND_FLAG) $(FLAGS) -o image-ui .
@@ -41,7 +41,7 @@ benchmark-fixtures: benchmark-build
 	./image-ui-benchmark --prepare-fixtures $(BENCHMARK_ARGS)
 
 test:
-	$(V) test $(TEST_FILES)
+	$(V) -enable-globals test $(TEST_FILES)
 
 clean:
 	rm -f image-ui image-ui-benchmark
