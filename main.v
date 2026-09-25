@@ -37,6 +37,7 @@ pub mut:
 	has_scanner_cancel            bool
 	requested_window_w            int
 	requested_window_h            int
+	navigation_direction          int
 	transparency_pattern          ui2.RepeatPattern
 	benchmark_live                BenchmarkLiveTrace
 }
@@ -80,7 +81,8 @@ pub fn (mut app ViewerApp) poll_scanner() {
 				}
 				received_any = true
 				count++
-				if batch.is_first_content && batch.items.len > 0 && !app.core.has_image {
+				if batch.is_first_content && batch.items.len > 0 && !app.core.has_image
+					&& (!app.core.has_pending_image() || app.core.pending_image_request.path != app.core.target_path) {
 					app.load_image_internal(app.core.target_path, false, false)
 				}
 				if batch.is_last {
@@ -140,6 +142,13 @@ fn (mut app ViewerApp) sync_sibling_cache_retention() {
 	if !app.image_pipeline.configured {
 		return
 	}
+	if !app.core.has_image {
+		app.image_pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+			scan_generation: app.core.scan_generation
+			direction:       app.navigation_direction
+		})
+		return
+	}
 	mut radius := app.image_pipeline.neighbor_radius
 	if radius < 0 {
 		radius = 0
@@ -161,6 +170,24 @@ fn (mut app ViewerApp) sync_sibling_cache_retention() {
 		}
 	}
 	app.image_pipeline.set_nearby_paths(nearby)
+	current := app.core.active_sibling_path()
+	previous := if app.core.active_index > 0 && app.core.active_index - 1 < app.core.playlist.len {
+		app.core.playlist[app.core.active_index - 1]
+	} else {
+		''
+	}
+	next := if app.core.active_index >= 0 && app.core.active_index + 1 < app.core.playlist.len {
+		app.core.playlist[app.core.active_index + 1]
+	} else {
+		''
+	}
+	app.image_pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: app.core.scan_generation
+		direction:       app.navigation_direction
+		previous_path:   previous
+		current_path:    current
+		next_path:       next
+	})
 }
 
 pub fn (mut app ViewerApp) poll_image_pipeline() {
@@ -172,11 +199,20 @@ pub fn (mut app ViewerApp) poll_image_pipeline() {
 		if app.core.commit_image_request(result.request, result.resource) {
 			if result.resource.state == .ready {
 				app.image_pipeline.set_resident(result.resource)
+				app.image_pipeline.mark_displayed(result.request)
 			}
 			app.image_pipeline.mark_committed(result.request)
 			app.update_window_title()
 		}
 	}
+	prefetched_path := app.image_pipeline.take_prefetched_path()
+	$if viewer_benchmark ? {
+		if prefetched_path.len > 0 {
+			app.benchmark_live.on_prefetch(prefetched_path)
+		}
+		app.benchmark_live.on_pipeline(app.image_pipeline.metrics, app.image_pipeline.prefetch_metrics)
+	}
+	app.sync_sibling_cache_retention()
 }
 
 pub fn (mut app ViewerApp) request_image(path string, reason string) {
@@ -194,6 +230,7 @@ pub fn (mut app ViewerApp) request_image(path string, reason string) {
 	app.sync_sibling_cache_retention()
 	request := app.core.request_image(path, reason)
 	app.image_pipeline.request_with_generation(path, reason, request.generation)
+	app.sync_sibling_cache_retention()
 	app.update_window_title()
 }
 
@@ -223,6 +260,12 @@ fn (mut app ViewerApp) start_scanner(dir_path string, target_path string, force 
 	app.scanner_cancel = chan bool{}
 	app.has_scanner_cancel = true
 	app.core.begin_scan(generation)
+	if app.image_pipeline.configured {
+		app.image_pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+			scan_generation: generation
+			direction:       app.navigation_direction
+		})
+	}
 	spawn scan_directory_siblings_with_generation_and_cancel(clean_dir, target_path, generation, app.scanner_ch, app.scanner_cancel)
 }
 
@@ -239,6 +282,7 @@ fn (mut app ViewerApp) load_image_internal(path string, start_scan bool, force_s
 		return
 	}
 
+	app.navigation_direction = 0
 	app.request_image(path, 'load')
 	if start_scan {
 		app.start_scanner(os.dir(path), path, force_scan)
@@ -593,31 +637,43 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 
 	match e.code {
 		.left {
+			direction_changed := app.navigation_direction != -1
+			app.navigation_direction = -1
 			if app.core.prev_sibling() {
 				app.request_image(app.core.target_path, 'sibling')
+			} else if direction_changed {
+				app.sync_sibling_cache_retention()
 			}
 		}
 		.right {
+			direction_changed := app.navigation_direction != 1
+			app.navigation_direction = 1
 			if app.core.next_sibling() {
 				app.request_image(app.core.target_path, 'sibling')
+			} else if direction_changed {
+				app.sync_sibling_cache_retention()
 			}
 		}
 		.up {
+			app.navigation_direction = -1
 			if app.core.prev_secondary_step() {
 				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.down {
+			app.navigation_direction = 1
 			if app.core.next_secondary_step() {
 				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.page_up {
+			app.navigation_direction = -1
 			if app.core.prev_secondary_step() {
 				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.page_down {
+			app.navigation_direction = 1
 			if app.core.next_secondary_step() {
 				app.request_image(app.core.target_path, 'sibling')
 			}

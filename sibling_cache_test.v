@@ -191,6 +191,45 @@ fn test_async_pipeline_cache_hit_reuses_resource_without_second_decode() {
 	assert pipeline.cache.metrics.renderer_bytes == 4
 }
 
+fn test_prefetched_resource_is_reused_by_user_request_without_second_decode() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-reuse-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	previous := os.join_path(root, 'previous.bmp')
+	current := os.join_path(root, 'current.bmp')
+	next := os.join_path(root, 'next.bmp')
+	for path in [previous, current, next] {
+		os.write_bytes(path, sibling_cache_test_bmp()) or { panic(err) }
+	}
+	sibling_cache_test_decode_count = 0
+	mut pipeline := new_image_pipeline_with_cache(sibling_cache_test_decoder, 1024)
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 1
+		direction:       1
+		current_path:    current
+	})
+	mut prefetched := ImagePipelineResult{}
+	select {
+		prefetched = <-pipeline.prefetch_result_ch {
+		}
+		5 * time.second {
+			panic('prefetch decode timeout')
+		}
+	}
+	pipeline.prefetch_result_ch <- prefetched
+	assert pipeline.poll().len == 0
+	assert pipeline.cache.contains(current)
+	request := pipeline.request(current, 'user')
+	results := pipeline.poll()
+	assert results.len == 1
+	assert results[0].request.generation == request.generation
+	assert results[0].resource.source == current
+	assert sibling_cache_test_decode_count == 1
+	assert pipeline.metrics.resident_hits == 1
+}
+
 fn test_async_pipeline_reloads_after_file_signature_changes() {
 	path := os.join_path(os.temp_dir(), 'image-ui-sibling-invalidation-${time.ticks()}.bmp')
 	os.write_bytes(path, sibling_cache_test_bmp()) or { panic(err) }
@@ -256,19 +295,190 @@ fn test_pipeline_keeps_current_resource_when_obsolete_completion_arrives() {
 	assert pipeline.resident_resource.source == latest_path
 }
 
-fn test_viewer_configures_nearby_retention_without_prefetching() {
+fn test_viewer_configures_nearby_retention_and_prefetches_immediate_neighborhood() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-neighborhood-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	previous := os.join_path(root, 'previous.png')
+	current := os.join_path(root, 'current.png')
+	next := os.join_path(root, 'next.png')
+	for path in [previous, current, next] {
+		os.write_file(path, 'fixture') or { panic(err) }
+	}
 	mut app := &ViewerApp{
 		core:                          new_app()
 		image_pipeline:                new_manual_image_pipeline()
 		sibling_cache_neighbor_radius: 2
 	}
-	app.ensure_image_pipeline()
-	app.core.playlist = ['0.png', '1.png', '2.png', '3.png', '4.png', '5.png']
-	app.core.active_index = 3
+	app.core.playlist = [previous, current, next]
+	app.core.active_index = 1
+	app.core.set_image_loaded(current, 1, 1)
 	app.sync_sibling_cache_retention()
-	assert app.image_pipeline.nearby_paths == ['1.png', '2.png', '4.png', '5.png']
-	assert app.image_pipeline.cache.metrics.resident_entries == 0
-	assert app.image_pipeline.metrics.started == 0
+
+	assert app.image_pipeline.nearby_paths == [previous, next]
+	assert app.image_pipeline.has_prefetch_active
+	assert app.image_pipeline.prefetch_active_request.path == current
+	assert app.image_pipeline.has_prefetch_queued
+	assert app.image_pipeline.prefetch_queued_request.path == next
+	assert app.image_pipeline.prefetch_metrics.requested == 3
+
+	for expected_path in [current, next, previous] {
+		assert app.image_pipeline.complete_prefetch_active(sibling_cache_test_resource(expected_path))
+		assert app.image_pipeline.poll().len == 0
+		assert app.image_pipeline.cache.contains(expected_path)
+	}
+
+	assert app.image_pipeline.prefetch_metrics.prefetched == 3
+	assert app.image_pipeline.prefetch_pending_count() == 0
+	assert app.image_pipeline.cache.metrics.resident_bytes <= app.image_pipeline.cache.budget_bytes
+}
+
+fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-context-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	previous := os.join_path(root, 'previous.png')
+	current := os.join_path(root, 'current.png')
+	next := os.join_path(root, 'next.png')
+	for path in [previous, current, next] {
+		os.write_file(path, 'fixture') or { panic(err) }
+	}
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 1
+		direction:       1
+		current_path:    current
+	})
+
+	first_generation := pipeline.prefetch_generation
+	assert pipeline.prefetch_active_request.path == current
+
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 4
+		direction:       -1
+		previous_path:   previous
+		current_path:    current
+		next_path:       next
+	})
+	assert pipeline.prefetch_generation > first_generation
+	assert pipeline.prefetch_active_request.path == current
+	pending_after_direction := pipeline.prefetch_pending_count()
+	assert pending_after_direction == 4
+	assert pipeline.complete_prefetch_active(sibling_cache_test_resource(current))
+	assert pipeline.poll().len == 0
+	assert !pipeline.cache.contains(current)
+	assert pipeline.prefetch_active_request.path == current
+	assert pipeline.prefetch_queued_request.path == previous
+
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 5
+		direction:       -1
+		previous_path:   previous
+		current_path:    current
+		next_path:       next
+	})
+	assert pipeline.prefetch_scan_generation == 5
+	assert pipeline.prefetch_context_valid
+	pending_after_scan := pipeline.prefetch_pending_count()
+	assert pending_after_scan == 4
+	assert pipeline.prefetch_metrics.cancelled >= 2
+	assert pipeline.prefetch_metrics.skipped >= 2
+	stale_generation := pipeline.prefetch_generation
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 3
+		direction:       1
+		previous_path:   previous
+		current_path:    next
+		next_path:       current
+	})
+	assert pipeline.prefetch_scan_generation == 5
+	assert pipeline.prefetch_generation == stale_generation
+}
+
+fn test_scanner_neighborhood_batch_starts_prefetch_for_discovered_paths() {
+	root := os.join_path(os.temp_dir(), 'image-ui-scanner-prefetch-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	previous := os.join_path(root, '00-previous.png')
+	current := os.join_path(root, '01-current.png')
+	next := os.join_path(root, '02-next.png')
+	for path in [previous, current, next] {
+		os.write_file(path, 'fixture') or { panic(err) }
+	}
+	mut app := &ViewerApp{
+		core:           new_app()
+		image_pipeline: new_manual_image_pipeline()
+	}
+	app.core.open_path(current)
+	app.core.playlist = [current]
+	app.core.active_index = 0
+	app.core.set_image_loaded(current, 1, 1)
+	app.core.begin_scan(app.core.scan_generation)
+	app.scanner_ch = chan SiblingBatch{cap: 1}
+	app.has_scanner_ch = true
+	app.scanner_ch <- SiblingBatch{
+		items:           [previous, current, next]
+		is_neighborhood: true
+		is_last:         true
+		generation:      app.core.scan_generation
+	}
+	app.poll_scanner()
+	assert app.core.playlist == [previous, current, next]
+	assert app.image_pipeline.has_prefetch_active
+	assert app.image_pipeline.prefetch_active_request.path == current
+	assert app.image_pipeline.prefetch_queued_paths == [next, previous]
+	assert app.image_pipeline.prefetch_metrics.requested == 3
+}
+
+fn test_user_request_has_independent_priority_over_active_prefetch() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-priority-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	previous := os.join_path(root, 'previous.png')
+	current := os.join_path(root, 'current.png')
+	next := os.join_path(root, 'next.png')
+	for path in [previous, current, next] {
+		os.write_file(path, 'fixture') or { panic(err) }
+	}
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 1
+		direction:       1
+		previous_path:   previous
+		current_path:    current
+		next_path:       next
+	})
+	request := pipeline.request(next, 'user')
+	assert pipeline.has_active
+	assert pipeline.has_prefetch_active
+	assert pipeline.pending_count() == 1
+	assert pipeline.complete(request.generation, request.path, sibling_cache_test_resource(next))
+	results := pipeline.poll()
+	assert results.len == 1
+	assert results[0].request.path == next
+	assert pipeline.has_prefetch_active
+}
+
+fn test_cache_evicts_unrequired_entries_before_current_and_pending_resources() {
+	mut cache := new_sibling_resource_cache(20)
+	first_signature := SiblingFileSignature{ exists: true, size: 1, modified_unix: 1 }
+	second_signature := SiblingFileSignature{ exists: true, size: 2, modified_unix: 2 }
+	third_signature := SiblingFileSignature{ exists: true, size: 3, modified_unix: 3 }
+	assert cache.put('current.png', first_signature, sibling_cache_test_resource('current.png'), 10, 0)
+	assert cache.put('pending.png', second_signature, sibling_cache_test_resource('pending.png'), 10, 0)
+	cache.set_requirements('current.png', ['current.png', 'pending.png'], [])
+	assert !cache.put('prefetch.png', third_signature, sibling_cache_test_resource('prefetch.png'), 10, 0)
+	assert cache.contains('current.png')
+	assert cache.contains('pending.png')
+	assert !cache.contains('prefetch.png')
 }
 
 fn test_sibling_resource_cache_is_independent_from_filmstrip_thumbnail_budget() {

@@ -36,27 +36,29 @@ pub mut:
 
 pub struct BenchmarkLiveTrace {
 pub mut:
-	enabled         bool
-	path            string
-	launch_us       i64
-	launch_mono_us  i64
-	last_frame_us   i64
-	last_width      int
-	last_height     int
-	frame_count     int
-	frame_target    int
-	warmup_frames   int
-	has_frame       bool
+	enabled             bool
+	path                string
+	launch_us           i64
+	launch_mono_us      i64
+	last_frame_us       i64
+	last_width          int
+	last_height         int
+	frame_count         int
+	frame_target        int
+	warmup_frames       int
+	has_frame           bool
 	has_content         bool
 	has_input           bool
 	has_scan            bool
 	frame_content_ready bool
 	frame_scan_complete bool
 	pending_actions     []LivePendingAction
-	pending_resize  bool
-	finished        bool
-	frames          []LiveFrameSample
-	phase_trace     StartupPhaseTrace
+	pending_resize      bool
+	finished            bool
+	frames              []LiveFrameSample
+	phase_trace         StartupPhaseTrace
+	pipeline_metrics    ImagePipelineMetrics
+	prefetch_metrics    ImagePrefetchMetrics
 }
 
 pub struct LiveTraceSummary {
@@ -78,7 +80,16 @@ pub mut:
 	phase_ns                    map[string]i64
 	phase_order                 []string
 	phase_monotonic             bool = true
-	last_phase_us               i64 = -1
+	last_phase_us               i64  = -1
+	requested                   int
+	displayed                   int
+	skipped                     int
+	coalesced                   int
+	prefetch_requested          int
+	prefetched                  int
+	prefetch_skipped            int
+	prefetch_coalesced          int
+	prefetch_cached             int
 }
 
 pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !LiveTraceSummary {
@@ -137,6 +148,28 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 					'pan' { summary.pan_to_frame_ns = row.value_us * 1000 }
 					'zoom' { summary.zoom_to_frame_ns = row.value_us * 1000 }
 					else {}
+				}
+			}
+			'prefetch_cached' {
+				summary.prefetch_cached++
+			}
+			'pipeline_counters' {
+				summary.requested = row.value_us
+				for item in row.detail.split(',') {
+					counter_parts := item.split(':')
+					if counter_parts.len != 2 {
+						continue
+					}
+					match counter_parts[0] {
+						'displayed' { summary.displayed = counter_parts[1].int() }
+						'skipped' { summary.skipped = counter_parts[1].int() }
+						'coalesced' { summary.coalesced = counter_parts[1].int() }
+						'prefetch_requested' { summary.prefetch_requested = counter_parts[1].int() }
+						'prefetched' { summary.prefetched = counter_parts[1].int() }
+						'prefetch_skipped' { summary.prefetch_skipped = counter_parts[1].int() }
+						'prefetch_coalesced' { summary.prefetch_coalesced = counter_parts[1].int() }
+						else {}
+					}
 				}
 			}
 			'resize_observed' {
@@ -244,6 +277,9 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 	}
 	trace.pending_actions.clear()
 	if trace.frame_count >= trace.frame_target && !trace.finished {
+		trace.write_event('pipeline_counters', trace.last_width, trace.last_height, trace.frame_count,
+			trace.pipeline_metrics.requested,
+			'displayed:${trace.pipeline_metrics.displayed},skipped:${trace.pipeline_metrics.skipped},coalesced:${trace.pipeline_metrics.coalesced},prefetch_requested:${trace.prefetch_metrics.requested},prefetched:${trace.prefetch_metrics.prefetched},prefetch_skipped:${trace.prefetch_metrics.skipped},prefetch_coalesced:${trace.prefetch_metrics.coalesced}')
 		for frame in trace.frames {
 			trace.write_event('frame_interval', frame.width, frame.height, frame.order, frame.interval_us, '')
 		}
@@ -269,6 +305,21 @@ pub fn (mut trace BenchmarkLiveTrace) complete_frame() {
 		trace.mark_phase('directory_completion', u64(now_mono_us) * 1000)
 		trace.write_event('scan_complete', trace.last_width, trace.last_height, trace.frame_count, 0, '')
 	}
+}
+
+pub fn (mut trace BenchmarkLiveTrace) on_prefetch(path string) {
+	if !trace.enabled || path.len == 0 {
+		return
+	}
+	trace.write_event('prefetch_cached', trace.last_width, trace.last_height, trace.frame_count, 0, path)
+}
+
+pub fn (mut trace BenchmarkLiveTrace) on_pipeline(metrics ImagePipelineMetrics, prefetch ImagePrefetchMetrics) {
+	if !trace.enabled {
+		return
+	}
+	trace.pipeline_metrics = metrics
+	trace.prefetch_metrics = prefetch
 }
 
 fn (mut trace BenchmarkLiveTrace) on_key(code ui2.KeyCode) {

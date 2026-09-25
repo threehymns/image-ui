@@ -8,12 +8,14 @@ pub const benchmark_sibling_count = 128
 
 pub struct BenchmarkFixtures {
 pub:
-	root          string
-	alpha         string
-	opaque        string
-	large_4k      string
-	siblings      string
-	sibling_count int
+	root                   string
+	alpha                  string
+	opaque                 string
+	large_4k               string
+	large_sibling_previous string
+	large_sibling_next     string
+	siblings               string
+	sibling_count          int
 }
 
 pub fn (fixtures BenchmarkFixtures) sibling(index int) string {
@@ -38,10 +40,21 @@ pub fn generate_benchmark_fixtures(root string, count int) !BenchmarkFixtures {
 	alpha := os.join_path(root, 'alpha.tga')
 	opaque := os.join_path(root, 'opaque.bmp')
 	large := os.join_path(root, 'large-4k.bmp')
+	large_previous := os.join_path(root, 'large-4k-previous.bmp')
+	large_next := os.join_path(root, 'large-4k_next.bmp')
 	os.write_bytes(alpha, encode_alpha_tga(64, 64)) or { return err }
 	os.write_bytes(opaque, encode_opaque_bmp(96, 64, 17)) or { return err }
 	os.write_bytes(large, encode_opaque_bmp(benchmark_large_width, benchmark_large_height, 31)) or {
 		return err
+	}
+	for path in [large_previous, large_next] {
+		if os.exists(path) {
+			os.rm(path) or { return err }
+		}
+		os.link(large, path) or {
+			data := os.read_bytes(large) or { return err }
+			os.write_bytes(path, data) or { return err }
+		}
 	}
 	for index in 0 .. count {
 		path := os.join_path(siblings, 'sibling-${index:03d}.bmp')
@@ -51,12 +64,14 @@ pub fn generate_benchmark_fixtures(root string, count int) !BenchmarkFixtures {
 		}
 	}
 	return BenchmarkFixtures{
-		root:          root
-		alpha:         alpha
-		opaque:        opaque
-		large_4k:      large
-		siblings:      siblings
-		sibling_count: count
+		root:                   root
+		alpha:                  alpha
+		opaque:                 opaque
+		large_4k:               large
+		large_sibling_previous: large_previous
+		large_sibling_next:     large_next
+		siblings:               siblings
+		sibling_count:          count
 	}
 }
 

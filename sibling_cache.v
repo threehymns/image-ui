@@ -60,6 +60,7 @@ pub mut:
 	budget_bytes  int
 	entries       map[string]SiblingResourceCacheEntry
 	protected     map[string]bool
+	required      map[string]bool
 	current_path  string
 	next_sequence u64
 	metrics       SiblingResourceCacheMetrics
@@ -70,6 +71,7 @@ pub fn new_sibling_resource_cache(budget_bytes int) SiblingResourceCache {
 		budget_bytes: if budget_bytes < 0 { 0 } else { budget_bytes }
 		entries:      map[string]SiblingResourceCacheEntry{}
 		protected:    map[string]bool{}
+		required:     map[string]bool{}
 	}
 }
 
@@ -93,11 +95,15 @@ fn (mut cache SiblingResourceCache) remove_path(path string) {
 	cache.entries.delete(path)
 }
 
-fn (cache &SiblingResourceCache) oldest_candidate(include_protected bool, include_current bool) string {
+fn (cache &SiblingResourceCache) oldest_candidate(include_protected bool, include_required bool,
+	include_current bool) string {
 	mut oldest_path := ''
 	mut oldest_sequence := u64(0)
 	for path, entry in cache.entries {
 		if !include_protected && path in cache.protected {
+			continue
+		}
+		if !include_required && path in cache.required {
 			continue
 		}
 		if !include_current && path == cache.current_path {
@@ -113,12 +119,15 @@ fn (cache &SiblingResourceCache) oldest_candidate(include_protected bool, includ
 
 fn (mut cache SiblingResourceCache) evict_to_fit() {
 	for cache.metrics.resident_bytes > cache.budget_bytes {
-		mut oldest_path := cache.oldest_candidate(false, false)
+		mut oldest_path := cache.oldest_candidate(false, false, false)
 		if oldest_path == '' {
-			oldest_path = cache.oldest_candidate(true, false)
+			oldest_path = cache.oldest_candidate(true, false, false)
 		}
 		if oldest_path == '' {
-			oldest_path = cache.oldest_candidate(true, true)
+			oldest_path = cache.oldest_candidate(true, true, false)
+		}
+		if oldest_path == '' {
+			oldest_path = cache.oldest_candidate(true, true, true)
 		}
 		if oldest_path == '' {
 			return
@@ -134,10 +143,23 @@ pub fn (mut cache SiblingResourceCache) set_budget(budget_bytes int) {
 }
 
 pub fn (mut cache SiblingResourceCache) set_retention(current_path string, nearby_paths []string) {
+	cache.set_requirements(current_path, [current_path], nearby_paths)
+}
+
+pub fn (mut cache SiblingResourceCache) set_requirements(current_path string, required_paths []string,
+	nearby_paths []string) {
 	cache.current_path = current_path
+	cache.required = map[string]bool{}
 	cache.protected = map[string]bool{}
 	if current_path != '' {
+		cache.required[current_path] = true
 		cache.protected[current_path] = true
+	}
+	for path in required_paths {
+		if path != '' {
+			cache.required[path] = true
+			cache.protected[path] = true
+		}
 	}
 	for path in nearby_paths {
 		if path != '' {

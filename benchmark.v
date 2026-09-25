@@ -4,6 +4,9 @@ import os
 import time
 import ui2
 
+pub const benchmark_key_repeat_steps = 16
+pub const benchmark_fast_input_count = 100
+
 pub enum BenchmarkCacheSelection {
 	cold
 	warm
@@ -21,39 +24,60 @@ pub mut:
 
 pub struct BenchmarkSample {
 pub:
-	elapsed_ns      i64
-	checksum        u64
-	cache_hits      int
-	cache_misses    int
-	cache_updates   int
-	cache_evictions int
-	cache_bytes     int
-	cache_budget    int
+	elapsed_ns         i64
+	checksum           u64
+	requested          int
+	displayed          int
+	skipped            int
+	coalesced          int
+	prefetch_requested int
+	prefetched         int
+	prefetch_skipped   int
+	prefetch_coalesced int
+	max_pending        int
+	max_total_pending  int
+	cache_hits         int
+	cache_misses       int
+	cache_updates      int
+	cache_evictions    int
+	cache_bytes        int
+	cache_budget       int
 }
 
 pub struct BenchmarkResult {
 pub:
-	name            string
-	fixture         string
-	cache           string
-	warmup          int
-	iterations      int
-	median_ns       i64
-	p95_ns          i64
-	checksum        u64
-	verified        bool
-	cache_hits      int
-	cache_misses    int
-	cache_updates   int
-	cache_evictions int
-	cache_bytes     int
-	cache_budget    int
+	name               string
+	fixture            string
+	cache              string
+	warmup             int
+	iterations         int
+	median_ns          i64
+	p95_ns             i64
+	checksum           u64
+	verified           bool
+	requested          int
+	displayed          int
+	skipped            int
+	coalesced          int
+	prefetch_requested int
+	prefetched         int
+	prefetch_skipped   int
+	prefetch_coalesced int
+	max_pending        int
+	max_total_pending  int
+	cache_hits         int
+	cache_misses       int
+	cache_updates      int
+	cache_evictions    int
+	cache_bytes        int
+	cache_budget       int
 }
 
 struct BenchmarkOperation {
 pub mut:
 	kind               string
 	path               string
+	secondary_path     string
 	width              int
 	height             int
 	cache              string
@@ -89,6 +113,8 @@ pub fn benchmark_main() {
 			println('alpha=${fixtures.alpha}')
 			println('opaque=${fixtures.opaque}')
 			println('large_4k=${fixtures.large_4k}')
+			println('large_sibling_previous=${fixtures.large_sibling_previous}')
+			println('large_sibling_next=${fixtures.large_sibling_next}')
 			println('siblings=${fixtures.siblings}')
 			println('sibling_count=${fixtures.sibling_count}')
 		}
@@ -259,6 +285,51 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		cache: 'no-app-cache'
 	})
 	runner.add(BenchmarkOperation{
+		kind:               'resident_sibling_switch'
+		path:               fixtures.sibling(0)
+		secondary_path:     fixtures.sibling(1)
+		width:              1024
+		height:             768
+		cache:              'sibling-lru-resident'
+		cache_budget_bytes: 4 * 1024 * 1024
+	})
+	runner.add(BenchmarkOperation{
+		kind:               'resident_sibling_switch_4k'
+		path:               fixtures.large_4k
+		secondary_path:     fixtures.large_sibling_next
+		width:              benchmark_large_width
+		height:             benchmark_large_height
+		cache:              'sibling-lru-resident'
+		cache_budget_bytes: default_sibling_cache_budget_bytes
+	})
+	runner.add(BenchmarkOperation{
+		kind:               'key_repeat_resident_right'
+		path:               fixtures.sibling(0)
+		secondary_path:     fixtures.sibling(benchmark_key_repeat_steps)
+		width:              1024
+		height:             768
+		cache:              'sibling-lru-resident'
+		cache_budget_bytes: 4 * 1024 * 1024
+	})
+	runner.add(BenchmarkOperation{
+		kind:               'key_repeat_resident_left'
+		path:               fixtures.sibling(benchmark_key_repeat_steps)
+		secondary_path:     fixtures.sibling(0)
+		width:              1024
+		height:             768
+		cache:              'sibling-lru-resident'
+		cache_budget_bytes: 4 * 1024 * 1024
+	})
+	runner.add(BenchmarkOperation{
+		kind:               'key_repeat_faster_than_decode'
+		path:               fixtures.sibling(0)
+		secondary_path:     fixtures.sibling(benchmark_fast_input_count)
+		width:              1024
+		height:             768
+		cache:              'manual-pipeline'
+		cache_budget_bytes: 4 * 1024 * 1024
+	})
+	runner.add(BenchmarkOperation{
 		kind:  'pattern_tile'
 		cache: 'constant'
 	})
@@ -319,17 +390,18 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	println('compile_flags=${build.compile_flag}')
 	println('hardware=${hardware.os_name} ${hardware.architecture} cpu=${hardware.cpu_model} logical_cpus=${hardware.logical_cpus} memory=${hardware.memory} gpu_driver=${hardware.gpu_driver}')
 	println('config=warmup:${config.warmup} iterations:${config.iterations} cache:${benchmark_cache_name(config.cache)} cache_budget_override:${config.cache_budget_bytes}')
-	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
+	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} large_neighbors:2 siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
 	println('cache_note=image rows have no application cache; sibling-lru rows use the full-resolution resource cache')
+	println('sibling_counter_note=requested/displayed/skipped/coalesced count user Sibling requests; prefetch columns count Neighborhood candidates and accepted cache insertions')
 	println('cache_separation=Filmstrip Thumbnail Cache remains a separate cache and is not included in sibling-lru budget accounting')
 	println('pattern_note=the Viewer uses one 32x32 logical repeat tile; no full-window raster is generated')
 	println('measurement=screen rows build UI2 elements only and do not include GPU submission')
-	println('| case | fixture | cache | budget bytes | warmup | iterations | median ms | p95 ms | hits | misses | updates | evictions | resident bytes | checksum | status |')
-	println('| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |')
+	println('| case | fixture | cache | budget bytes | warmup | iterations | median ms | p95 ms | requested | displayed | skipped | coalesced | prefetch requested | prefetched | prefetch skipped | prefetch coalesced | max pending | max total pending | hits | misses | updates | evictions | resident bytes | checksum | status |')
+	println('| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |')
 	mut verified := true
 	for result in runner.results {
 		status := if result.verified { 'ok' } else { 'checksum-mismatch' }
-		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.cache_budget} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.cache_hits} | ${result.cache_misses} | ${result.cache_updates} | ${result.cache_evictions} | ${result.cache_bytes} | ${result.checksum.hex()} | ${status} |')
+		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.cache_budget} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.requested} | ${result.displayed} | ${result.skipped} | ${result.coalesced} | ${result.prefetch_requested} | ${result.prefetched} | ${result.prefetch_skipped} | ${result.prefetch_coalesced} | ${result.max_pending} | ${result.max_total_pending} | ${result.cache_hits} | ${result.cache_misses} | ${result.cache_updates} | ${result.cache_evictions} | ${result.cache_bytes} | ${result.checksum.hex()} | ${status} |')
 		verified = verified && result.verified
 	}
 	print_headless_startup_phases()
@@ -348,6 +420,16 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 	mut samples := []i64{}
 	mut expected := u64(0)
 	mut verified := true
+	mut sample_requested := 0
+	mut sample_displayed := 0
+	mut sample_skipped := 0
+	mut sample_coalesced := 0
+	mut sample_prefetch_requested := 0
+	mut sample_prefetched := 0
+	mut sample_prefetch_skipped := 0
+	mut sample_prefetch_coalesced := 0
+	mut sample_max_pending := 0
+	mut sample_max_total_pending := 0
 	mut sample_cache_hits := 0
 	mut sample_cache_misses := 0
 	mut sample_cache_updates := 0
@@ -357,6 +439,16 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 		sample := execute_benchmark_operation(operation, iteration)
 		if iteration == 0 {
 			expected = sample.checksum
+			sample_requested = sample.requested
+			sample_displayed = sample.displayed
+			sample_skipped = sample.skipped
+			sample_coalesced = sample.coalesced
+			sample_prefetch_requested = sample.prefetch_requested
+			sample_prefetched = sample.prefetched
+			sample_prefetch_skipped = sample.prefetch_skipped
+			sample_prefetch_coalesced = sample.prefetch_coalesced
+			sample_max_pending = sample.max_pending
+			sample_max_total_pending = sample.max_total_pending
 			sample_cache_hits = sample.cache_hits
 			sample_cache_misses = sample.cache_misses
 			sample_cache_updates = sample.cache_updates
@@ -374,26 +466,45 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 		operation.path
 	}
 	runner.results << BenchmarkResult{
-		name:            operation.kind
-		fixture:         fixture
-		cache:           operation.cache
-		warmup:          runner.config.warmup
-		iterations:      runner.config.iterations
-		median_ns:       stats.median_ns
-		p95_ns:          stats.p95_ns
-		checksum:        expected
-		verified:        verified
-		cache_hits:      sample_cache_hits
-		cache_misses:    sample_cache_misses
-		cache_updates:   sample_cache_updates
-		cache_evictions: sample_cache_evictions
-		cache_bytes:     sample_cache_bytes
-		cache_budget:    operation.cache_budget_bytes
+		name:               operation.kind
+		fixture:            fixture
+		cache:              operation.cache
+		warmup:             runner.config.warmup
+		iterations:         runner.config.iterations
+		median_ns:          stats.median_ns
+		p95_ns:             stats.p95_ns
+		checksum:           expected
+		verified:           verified
+		requested:          sample_requested
+		displayed:          sample_displayed
+		skipped:            sample_skipped
+		coalesced:          sample_coalesced
+		prefetch_requested: sample_prefetch_requested
+		prefetched:         sample_prefetched
+		prefetch_skipped:   sample_prefetch_skipped
+		prefetch_coalesced: sample_prefetch_coalesced
+		max_pending:        sample_max_pending
+		max_total_pending:  sample_max_total_pending
+		cache_hits:         sample_cache_hits
+		cache_misses:       sample_cache_misses
+		cache_updates:      sample_cache_updates
+		cache_evictions:    sample_cache_evictions
+		cache_bytes:        sample_cache_bytes
+		cache_budget:       operation.cache_budget_bytes
 	}
 }
 
 fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) BenchmarkSample {
 	match operation.kind {
+		'resident_sibling_switch', 'resident_sibling_switch_4k' {
+			return execute_resident_sibling_switch(operation)
+		}
+		'key_repeat_resident_right', 'key_repeat_resident_left' {
+			return execute_resident_key_repeat(operation)
+		}
+		'key_repeat_faster_than_decode' {
+			return execute_fast_key_repeat(operation)
+		}
 		'image_load_alpha', 'image_load_opaque', 'image_load_4k' {
 			mut stopwatch := time.new_stopwatch()
 			metadata := load_image_metadata(operation.path) or { panic(err) }
@@ -534,6 +645,167 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 	}
 }
 
+fn benchmark_ready_resource(path string, width int, height int) ui2.ImageResource {
+	pixel_bytes := width * height * 4
+	return ui2.ready_image_resource('benchmark-${path}', path, ui2.ImageResourceInput{
+		width:    width
+		height:   height
+		channels: 4
+		pixels:   []u8{len: pixel_bytes, init: 255}
+	}, .proven_opaque)
+}
+
+fn benchmark_pipeline_sample(elapsed_ns i64, checksum u64, app &ViewerApp) BenchmarkSample {
+	return BenchmarkSample{
+		elapsed_ns:         elapsed_ns
+		checksum:           checksum
+		requested:          app.image_pipeline.metrics.requested
+		displayed:          app.image_pipeline.metrics.displayed
+		skipped:            app.image_pipeline.metrics.skipped
+		coalesced:          app.image_pipeline.metrics.coalesced
+		prefetch_requested: app.image_pipeline.prefetch_metrics.requested
+		prefetched:         app.image_pipeline.prefetch_metrics.prefetched
+		prefetch_skipped:   app.image_pipeline.prefetch_metrics.skipped
+		prefetch_coalesced: app.image_pipeline.prefetch_metrics.coalesced
+		max_pending:        app.image_pipeline.metrics.max_pending
+		max_total_pending:  app.image_pipeline.metrics.max_total_pending
+		cache_hits:         app.image_pipeline.cache.metrics.hits
+		cache_misses:       app.image_pipeline.cache.metrics.misses
+		cache_updates:      app.image_pipeline.cache.metrics.updates
+		cache_evictions:    app.image_pipeline.cache.metrics.evictions
+		cache_bytes:        app.image_pipeline.cache.metrics.resident_bytes
+		cache_budget:       app.image_pipeline.cache.budget_bytes
+	}
+}
+
+fn benchmark_resident_switch_app(operation BenchmarkOperation) &ViewerApp {
+	current_decoded := decode_stbi_image(operation.path) or { panic(err) }
+	target_decoded := decode_stbi_image(operation.secondary_path) or { panic(err) }
+	current := image_resource_from_decoded('benchmark-current', operation.path, current_decoded)
+	target := image_resource_from_decoded('benchmark-target', operation.secondary_path, target_decoded)
+	mut app := &ViewerApp{
+		core:               new_app()
+		image_pipeline:     new_manual_image_pipeline()
+		requested_window_w: operation.width
+		requested_window_h: operation.height
+	}
+	app.core.playlist = [operation.path, operation.secondary_path]
+	app.core.active_index = 0
+	app.core.set_canvas_size(operation.width, operation.height)
+	app.core.set_image_resource(current)
+	app.image_pipeline.set_cache_budget(operation.cache_budget_bytes)
+	app.image_pipeline.set_resident(current)
+	target_signature := sibling_file_signature(operation.secondary_path)
+	assert app.image_pipeline.cache.put(operation.secondary_path, target_signature, target,
+		target_decoded.pixels.len, target_decoded.renderer_bytes)
+	app.sync_sibling_cache_retention()
+	return app
+}
+
+fn execute_resident_sibling_switch(operation BenchmarkOperation) BenchmarkSample {
+	mut app := benchmark_resident_switch_app(operation)
+	mut stopwatch := time.new_stopwatch()
+	app.handle_key_event(ui2.KeyEvent{ code: .right })
+	screen := app.build_screen_at_size(operation.width, operation.height)
+	elapsed := stopwatch.elapsed().nanoseconds()
+	assert app.core.displayed_image_resource().source == operation.secondary_path
+	mut checksum := benchmark_checksum_text(0, operation.secondary_path)
+	checksum = benchmark_checksum_text(checksum, '${screen.id}:${screen.children}')
+	return benchmark_pipeline_sample(elapsed, checksum, app)
+}
+
+fn benchmark_resident_repeat_app(operation BenchmarkOperation, right bool) &ViewerApp {
+	paths := benchmark_sibling_paths(os.dir(operation.path))
+	start_index := if right { 0 } else { benchmark_key_repeat_steps }
+	mut app := &ViewerApp{
+		core:               new_app()
+		image_pipeline:     new_manual_image_pipeline()
+		requested_window_w: operation.width
+		requested_window_h: operation.height
+	}
+	app.core.playlist = paths
+	app.core.active_index = start_index
+	app.core.set_canvas_size(operation.width, operation.height)
+	current := benchmark_ready_resource(operation.path, 96, 64)
+	app.core.set_image_resource(current)
+	app.image_pipeline.set_cache_budget(operation.cache_budget_bytes)
+	for index in 0 .. benchmark_key_repeat_steps + 1 {
+		path := paths[index]
+		signature := sibling_file_signature(path)
+		resource := benchmark_ready_resource(path, 96, 64)
+		assert app.image_pipeline.cache.put(path, signature, resource, 96 * 64 * 4, 96 * 64 * 4)
+	}
+	app.image_pipeline.set_resident(current)
+	app.sync_sibling_cache_retention()
+	return app
+}
+
+fn execute_resident_key_repeat(operation BenchmarkOperation) BenchmarkSample {
+	right := operation.kind == 'key_repeat_resident_right'
+	mut app := benchmark_resident_repeat_app(operation, right)
+	mut checksum := u64(0)
+	mut stopwatch := time.new_stopwatch()
+	if right {
+		for _ in 0 .. benchmark_key_repeat_steps {
+			app.handle_key_event(ui2.KeyEvent{ code: .right })
+			screen := app.build_screen_at_size(operation.width, operation.height)
+			checksum = benchmark_checksum_text(checksum, app.core.displayed_image_resource().source)
+			checksum = benchmark_checksum_text(checksum, '${screen.id}:${screen.children}')
+		}
+	} else {
+		for _ in 0 .. benchmark_key_repeat_steps {
+			app.handle_key_event(ui2.KeyEvent{ code: .left })
+			screen := app.build_screen_at_size(operation.width, operation.height)
+			checksum = benchmark_checksum_text(checksum, app.core.displayed_image_resource().source)
+			checksum = benchmark_checksum_text(checksum, '${screen.id}:${screen.children}')
+		}
+	}
+	elapsed := stopwatch.elapsed().nanoseconds()
+	assert app.image_pipeline.metrics.requested == benchmark_key_repeat_steps
+	assert app.image_pipeline.metrics.displayed == benchmark_key_repeat_steps
+	assert app.image_pipeline.metrics.skipped == 0
+	assert app.image_pipeline.metrics.coalesced == 0
+	return benchmark_pipeline_sample(elapsed, checksum, app)
+}
+
+fn execute_fast_key_repeat(operation BenchmarkOperation) BenchmarkSample {
+	paths := benchmark_sibling_paths(os.dir(operation.path))
+	mut app := &ViewerApp{
+		core:               new_app()
+		image_pipeline:     new_manual_image_pipeline()
+		requested_window_w: operation.width
+		requested_window_h: operation.height
+	}
+	app.core.playlist = paths
+	app.core.active_index = 0
+	app.core.set_canvas_size(operation.width, operation.height)
+	current := benchmark_ready_resource(operation.path, 96, 64)
+	app.core.set_image_resource(current)
+	app.image_pipeline.set_cache_budget(operation.cache_budget_bytes)
+	app.image_pipeline.set_resident(current)
+	mut stopwatch := time.new_stopwatch()
+	for _ in 0 .. benchmark_fast_input_count {
+		app.handle_key_event(ui2.KeyEvent{ code: .right })
+	}
+	elapsed := stopwatch.elapsed().nanoseconds()
+	first := app.image_pipeline.active_request
+	assert app.image_pipeline.complete_active(benchmark_ready_resource(first.path, 96, 64))
+	app.poll_image_pipeline()
+	latest := app.image_pipeline.active_request
+	assert latest.path == operation.secondary_path
+	assert app.image_pipeline.complete_active(benchmark_ready_resource(latest.path, 96, 64))
+	app.poll_image_pipeline()
+	assert app.core.displayed_image_resource().source == operation.secondary_path
+	assert app.image_pipeline.metrics.requested == benchmark_fast_input_count
+	assert app.image_pipeline.metrics.displayed == 1
+	assert app.image_pipeline.metrics.skipped == benchmark_fast_input_count - 1
+	assert app.image_pipeline.metrics.coalesced == benchmark_fast_input_count - 2
+	assert app.image_pipeline.metrics.max_pending == 2
+	assert app.image_pipeline.metrics.max_total_pending <= 5
+	checksum := benchmark_checksum_text(0, operation.secondary_path)
+	return benchmark_pipeline_sample(elapsed, checksum, app)
+}
+
 fn benchmark_navigation_app(directory string) &ViewerApp {
 	mut app := &ViewerApp{
 		core: new_app()
@@ -605,8 +877,12 @@ fn run_wayland_smoke(target string) ! {
 	if summary.process_to_first_content_ns < 0 || summary.process_to_first_input_ns < 0 {
 		return error('live trace lacks process-to-content or process-to-input marks')
 	}
-	if summary.toggle_to_frame_ns < 0 || summary.switch_to_frame_ns < 0 || summary.pan_to_frame_ns < 0 || summary.zoom_to_frame_ns < 0 {
+	if summary.toggle_to_frame_ns < 0 || summary.switch_to_frame_ns < 0
+		|| summary.pan_to_frame_ns < 0 || summary.zoom_to_frame_ns < 0 {
 		return error('live trace lacks one or more action-to-frame marks')
+	}
+	if summary.prefetch_cached == 0 || summary.requested < 1 || summary.displayed < 1 {
+		return error('live trace lacks resident Sibling prefetch or request counters')
 	}
 	if summary.resize_to_frame_ns < 0 || summary.frame_samples == 0 {
 		return error('live trace lacks resize or frame cadence samples')
@@ -629,6 +905,8 @@ fn run_wayland_smoke(target string) ! {
 	println('process_to_first_input_ms=${benchmark_ms(summary.process_to_first_input_ns)}')
 	println('toggle_to_frame_ms=${benchmark_ms(summary.toggle_to_frame_ns)}')
 	println('switch_to_frame_ms=${benchmark_ms(summary.switch_to_frame_ns)}')
+	println('sibling_requested=${summary.requested} sibling_displayed=${summary.displayed} sibling_skipped=${summary.skipped} sibling_coalesced=${summary.coalesced}')
+	println('prefetch_requested=${summary.prefetch_requested} prefetched=${summary.prefetched} prefetch_skipped=${summary.prefetch_skipped} prefetch_coalesced=${summary.prefetch_coalesced} prefetch_cached_events=${summary.prefetch_cached}')
 	println('pan_to_frame_ms=${benchmark_ms(summary.pan_to_frame_ns)}')
 	println('zoom_to_frame_ms=${benchmark_ms(summary.zoom_to_frame_ns)}')
 	println('resize_to_frame_ms=${benchmark_ms(summary.resize_to_frame_ns)}')
