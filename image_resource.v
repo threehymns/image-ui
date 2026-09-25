@@ -20,6 +20,13 @@ pub:
 }
 
 pub type ImageResourceDecoder = fn (string) !DecodedImage
+pub type ImageContentSignatureReader = fn (string) SiblingFileSignature
+
+struct CurrentResourceValidationResult {
+	path      string
+	epoch     u64
+	signature SiblingFileSignature
+}
 
 pub struct ImageResourceLoader {
 pub mut:
@@ -178,6 +185,21 @@ mut:
 	signature SiblingFileSignature
 }
 
+fn image_active_cancellation_transition(has_active bool, active_cancelled bool,
+	token ?&CancellationToken) bool {
+	if !has_active || active_cancelled {
+		return false
+	}
+	if active_token := token {
+		active_token.cancel()
+	}
+	return true
+}
+
+fn image_result_cancellation_transition(result_cancelled bool, active_cancelled bool) bool {
+	return result_cancelled && !active_cancelled
+}
+
 pub struct ImagePipelineMetrics {
 pub mut:
 	requested                 int
@@ -251,6 +273,7 @@ pub mut:
 	active_request                   ImageRequest
 	active_token                     ?&CancellationToken
 	has_active                       bool
+	active_cancelled                 bool
 	queued_request                   ImageRequest
 	has_queued                       bool
 	ready_request                    ImageRequest
@@ -270,6 +293,10 @@ pub mut:
 	current_revalidation_interval_ns u64 = 1_000_000_000
 	last_current_revalidation_ns     u64
 	current_resource_invalidated     bool
+	current_validation_ch            chan CurrentResourceValidationResult
+	current_validation_in_flight     bool
+	current_validation_epoch         u64
+	current_validation_reader        ImageContentSignatureReader = unsafe { nil }
 }
 
 pub fn new_image_pipeline(decoder ImageResourceDecoder) ImagePipeline {
@@ -282,6 +309,8 @@ pub fn new_image_pipeline_with_cache(decoder ImageResourceDecoder, budget_bytes 
 		result_ch:                    chan ImagePipelineResult{cap: 1}
 		cache:                        new_sibling_resource_cache(budget_bytes)
 		prefetch:                     new_image_prefetch_scheduler()
+		current_validation_ch:        chan CurrentResourceValidationResult{cap: 1}
+		current_validation_reader:    sibling_file_content_signature
 		last_current_revalidation_ns: time.sys_mono_now()
 		configured:                   true
 	}
@@ -575,10 +604,8 @@ fn (mut scheduler ImagePrefetchScheduler) cancel(replaced bool) bool {
 	scheduler.context_valid = false
 	scheduler.neighborhood_paths = []string{}
 	if scheduler.has_active {
-		if !scheduler.active_cancelled {
-			if token := scheduler.active_token {
-				token.cancel()
-			}
+		if image_active_cancellation_transition(scheduler.has_active, scheduler.active_cancelled,
+			scheduler.active_token) {
 			scheduler.active_cancelled = true
 			scheduler.metrics.skipped++
 			scheduler.metrics.cancelled++
@@ -706,10 +733,10 @@ pub fn (mut pipeline ImagePipeline) take_prefetched_path() string {
 }
 
 fn (mut pipeline ImagePipeline) cancel_active_user() {
-	if pipeline.has_active {
-		if token := pipeline.active_token {
-			token.cancel()
-		}
+	if image_active_cancellation_transition(pipeline.has_active, pipeline.active_cancelled,
+		pipeline.active_token) {
+		pipeline.active_cancelled = true
+		pipeline.metrics.cancelled++
 	}
 }
 
@@ -720,6 +747,7 @@ fn (mut pipeline ImagePipeline) dispatch(request ImageRequest) {
 	}
 	pipeline.active_request = dispatched
 	pipeline.has_active = true
+	pipeline.active_cancelled = false
 	pipeline.metrics.started++
 	pipeline.update_retention()
 	if !pipeline.manual && voidptr(pipeline.decoder) != unsafe { nil } {
@@ -845,7 +873,7 @@ pub fn (mut pipeline ImagePipeline) set_resident(resource ui2.ImageResource) {
 		signature = cached
 	}
 	if !signature.exists || !signature.has_content_digest {
-		signature = sibling_file_content_signature(resource.source)
+		signature = sibling_file_signature(resource.source)
 	}
 	pipeline.set_resident_with_signature(resource, signature)
 }
@@ -856,9 +884,10 @@ pub fn (mut pipeline ImagePipeline) set_resident_with_signature(resource ui2.Ima
 		pipeline.resident_signature = if signature.exists {
 			signature
 		} else {
-			sibling_file_content_signature(resource.source)
+			sibling_file_signature(resource.source)
 		}
 		pipeline.last_current_revalidation_ns = time.sys_mono_now()
+		pipeline.current_validation_epoch++
 		pipeline.current_resource_invalidated = false
 		pipeline.update_retention()
 		if pipeline.resident_signature.exists && resource.id.len > 0 && resource.decoded_pixels().len > 0
@@ -875,6 +904,7 @@ pub fn (mut pipeline ImagePipeline) clear_resident() {
 	pipeline.resident_signature = SiblingFileSignature{}
 	pipeline.has_ready = false
 	pipeline.ready_resource = ui2.ImageResource{}
+	pipeline.current_validation_epoch++
 	pipeline.current_resource_invalidated = false
 	pipeline.update_retention()
 }
@@ -887,33 +917,85 @@ pub fn (mut pipeline ImagePipeline) take_current_resource_invalidated() bool {
 	return true
 }
 
-fn (mut pipeline ImagePipeline) revalidate_current_resource() {
-	if pipeline.resident_resource.state != .ready {
+fn image_current_validation_worker(path string, epoch u64,
+	reader ImageContentSignatureReader, result_ch chan CurrentResourceValidationResult) {
+	signature := if voidptr(reader) == unsafe { nil } {
+		sibling_file_content_signature(path)
+	} else {
+		reader(path)
+	}
+	result_ch <- CurrentResourceValidationResult{
+		path:      path
+		epoch:     epoch
+		signature: signature
+	}
+}
+
+fn (mut pipeline ImagePipeline) apply_current_resource_validation(result CurrentResourceValidationResult) {
+	pipeline.current_validation_in_flight = false
+	if result.epoch != pipeline.current_validation_epoch
+		|| pipeline.resident_resource.state != .ready
+		|| result.path != pipeline.resident_resource.source {
+		return
+	}
+	if !result.signature.exists {
+		if pipeline.resident_signature.exists {
+			pipeline.resident_signature = result.signature
+			pipeline.current_resource_invalidated = true
+			pipeline.sync_cache_metrics()
+			pipeline.update_retention()
+		}
+		return
+	}
+	if !result.signature.has_content_digest {
+		return
+	}
+	if pipeline.resident_signature.exists
+		&& sibling_file_signature_validates(pipeline.resident_signature, result.signature) {
+		if pipeline.cache.contains(result.path) {
+			pipeline.cache.revalidate(result.path, result.signature)
+		}
+		pipeline.resident_signature = result.signature
+		pipeline.sync_cache_metrics()
+		return
+	}
+	if pipeline.cache.contains(result.path) {
+		pipeline.cache.revalidate(result.path, result.signature)
+	}
+	pipeline.resident_signature = result.signature
+	pipeline.current_resource_invalidated = true
+	pipeline.sync_cache_metrics()
+	pipeline.update_retention()
+}
+
+fn (mut pipeline ImagePipeline) poll_current_resource_validation() {
+	select {
+		result := <-pipeline.current_validation_ch {
+			pipeline.apply_current_resource_validation(result)
+		}
+		else {
+		}
+	}
+}
+
+fn (mut pipeline ImagePipeline) schedule_current_resource_validation() {
+	if pipeline.resident_resource.state != .ready || pipeline.current_validation_in_flight
+		|| pipeline.current_resource_invalidated {
 		return
 	}
 	now := time.sys_mono_now()
+	if pipeline.last_current_revalidation_ns > 0 && now <= pipeline.last_current_revalidation_ns {
+		return
+	}
 	if pipeline.last_current_revalidation_ns > 0
 		&& now - pipeline.last_current_revalidation_ns < pipeline.current_revalidation_interval_ns {
 		return
 	}
 	pipeline.last_current_revalidation_ns = now
-	path := pipeline.resident_resource.source
-	signature := sibling_file_content_signature(path)
-	if pipeline.resident_signature.exists
-		&& sibling_file_signature_matches(pipeline.resident_signature, signature) {
-		pipeline.resident_signature = signature
-		return
-	}
-	if pipeline.cache.contains(path) && pipeline.cache.revalidate(path, signature) {
-		pipeline.resident_signature = signature
-		pipeline.sync_cache_metrics()
-		return
-	}
-	pipeline.current_resource_invalidated = true
-	pipeline.resident_resource = ui2.loading_image_resource('file-change-${path}', path)
-	pipeline.resident_signature = SiblingFileSignature{}
-	pipeline.sync_cache_metrics()
-	pipeline.update_retention()
+	pipeline.current_validation_epoch++
+	pipeline.current_validation_in_flight = true
+	spawn image_current_validation_worker(pipeline.resident_resource.source,
+		pipeline.current_validation_epoch, pipeline.current_validation_reader, pipeline.current_validation_ch)
 }
 
 pub fn (mut pipeline ImagePipeline) complete_active(resource ui2.ImageResource) bool {
@@ -923,7 +1005,7 @@ pub fn (mut pipeline ImagePipeline) complete_active(resource ui2.ImageResource) 
 	result := ImagePipelineResult{
 		request:        pipeline.active_request
 		resource:       resource
-		signature:      sibling_file_content_signature(pipeline.active_request.path)
+		signature:      sibling_file_signature(pipeline.active_request.path)
 		cpu_bytes:      resource.decoded_pixels().len
 		renderer_bytes: image_resource_renderer_bytes(resource)
 	}
@@ -959,7 +1041,7 @@ pub fn (mut pipeline ImagePipeline) complete_prefetch_active(resource ui2.ImageR
 	result := ImagePipelineResult{
 		request:        pipeline.prefetch.active_request
 		resource:       resource
-		signature:      sibling_file_content_signature(pipeline.prefetch.active_request.path)
+		signature:      sibling_file_signature(pipeline.prefetch.active_request.path)
 		cpu_bytes:      resource.decoded_pixels().len
 		renderer_bytes: image_resource_renderer_bytes(resource)
 	}
@@ -1042,11 +1124,13 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 					pipeline.metrics.skipped++
 					continue
 				}
+				was_cancelled := pipeline.active_cancelled
 				pipeline.has_active = false
 				pipeline.active_token = none
+				pipeline.active_cancelled = false
 				pipeline.metrics.completed++
 				mut normalized := result
-				if normalized.cancelled {
+				if image_result_cancellation_transition(normalized.cancelled, was_cancelled) {
 					pipeline.metrics.cancelled++
 				} else if normalized.resource.state == .ready {
 					current_signature := sibling_file_signature(normalized.request.path)
@@ -1103,12 +1187,13 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 					|| result.request.path != pipeline.prefetch.active_request.path {
 					continue
 				}
+				was_cancelled := pipeline.prefetch.active_cancelled
 				pipeline.prefetch.has_active = false
 				pipeline.prefetch.active_token = none
 				pipeline.prefetch.active_cancelled = false
 				pipeline.prefetch.metrics.completed++
 				mut normalized := result
-				if normalized.cancelled {
+				if image_result_cancellation_transition(normalized.cancelled, was_cancelled) {
 					pipeline.prefetch.metrics.cancelled++
 				} else if normalized.resource.state == .ready {
 					current_signature := sibling_file_signature(normalized.request.path)
@@ -1144,7 +1229,8 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 	if pipeline.prefetch.has_queued && !pipeline.prefetch.has_active {
 		pipeline.pump_prefetch()
 	}
-	pipeline.revalidate_current_resource()
+	pipeline.poll_current_resource_validation()
+	pipeline.schedule_current_resource_validation()
 	pipeline.update_pending_metrics()
 	pipeline.sync_cache_metrics()
 	return accepted

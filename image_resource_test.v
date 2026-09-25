@@ -161,6 +161,8 @@ fn test_app_loading_resource_keeps_previous_metadata_until_commit() {
 	app.set_image_resource(ui2.loading_image_resource('loading-id', 'next.png'))
 	assert app.image_resource.state == .loading
 	assert app.image_resource.opacity == .unknown
+	assert app.displayed_image_resource().state == .ready
+	assert app.displayed_image_resource().source == 'ready.png'
 	assert app.has_image
 	assert app.img_width == 10
 	assert app.img_height == 20
@@ -437,7 +439,8 @@ fn test_cancelled_prefetch_never_commits_and_pumps_latest_context() {
 	}
 	assert started == latest_path
 	pipeline.prefetch.cancel(false)
-	assert pipeline.prefetch.metrics.cancelled >= 2
+	assert pipeline.prefetch.metrics.cancelled == 2
+	assert pipeline.prefetch.metrics.cancelled <= pipeline.prefetch.metrics.requested
 	image_pipeline_test_decode_release <- true
 	mut latest := ImagePipelineResult{}
 	select {

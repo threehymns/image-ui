@@ -12,6 +12,39 @@ fn test_benchmark_sample_summary_uses_fixed_percentiles() {
 	assert summary.p95_ns == 19
 }
 
+fn test_benchmark_counter_encoder_round_trips_trace_report() {
+	counters := BenchmarkCounters{
+		requested:                 7
+		displayed:                 2
+		skipped:                   3
+		coalesced:                 1
+		prefetch_requested:        4
+		prefetched:                2
+		prefetch_skipped:          1
+		prefetch_coalesced:        1
+		prefetch_cancelled:        1
+		prefetch_decodes:          2
+		decode_count:              3
+		max_pending:               0
+		max_total_pending:         0
+		cache_hits:                5
+		cache_misses:              4
+		cache_updates:             1
+		cache_evictions:           0
+		cache_invalidations:       1
+		cache_content_validations: 2
+		cache_bytes:               100
+		cache_peak_bytes:          120
+		cache_cpu_bytes:           60
+		cache_renderer_bytes:      40
+		cache_budget:              200
+	}
+	report := benchmark_counters_report(counters)
+	assert report == 'displayed:2,skipped:3,coalesced:1,prefetch_requested:4,prefetched:2,prefetch_skipped:1,prefetch_coalesced:1,prefetch_cancelled:1,decodes:3,prefetch_decodes:2,cache_hits:5,cache_misses:4,cache_updates:1,cache_evictions:0,cache_invalidations:1,cache_content_validations:2,cache_resident_bytes:100,cache_peak_bytes:120,cache_cpu_bytes:60,cache_renderer_bytes:40,cache_budget:200'
+	assert benchmark_counters_observation(counters).starts_with('requested:7:displayed:2')
+	assert benchmark_counters_from_report(report, counters.requested) == counters
+}
+
 fn test_benchmark_launch_clock_conversion_and_fallback() {
 	assert benchmark_launch_mono_ns('9000', 10000, 8_000_000, 7_800_000) == 7_000_000
 	assert benchmark_launch_mono_ns('10000', 10000, 8_000_000, 7_800_000) == 8_000_000
@@ -207,11 +240,17 @@ fn test_live_trace_benchmark_keys_use_variant_pointer_actions() {
 	trace.on_pointer('pan_transparent')
 	assert trace.has_input
 	assert trace.pending_actions.len == 1
-	assert trace.pending_actions[0].action == 'pan_transparent'
+	assert trace.pending_actions[0].action == 'pan_transparent:1'
 	trace.pending_actions.clear()
 	trace.on_pointer('zoom_opaque')
 	assert trace.pending_actions.len == 1
-	assert trace.pending_actions[0].action == 'zoom_opaque'
+	assert trace.pending_actions[0].action == 'zoom_opaque:1'
+	trace.pending_actions.clear()
+	trace.on_key(.t)
+	assert trace.pending_actions[0].action == 'toggle'
+	trace.pending_actions.clear()
+	trace.on_key(.t)
+	assert trace.pending_actions[0].action == 'toggle_restore'
 }
 
 fn test_live_trace_marks_content_after_frame_completion() {
@@ -240,10 +279,14 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 		'first_input\t21000\t3840\t2160\t0\t20000',
 		'input_key\t21000\t3840\t2160\t1\t10000',
 		'action_presented\t22667\t3840\t2160\t2\t1667\ttoggle',
-		'action_presented\t23000\t3840\t2160\t2\t333\tpan_transparent',
-		'action_presented\t23333\t3840\t2160\t2\t666\tpan_opaque',
-		'action_presented\t23666\t3840\t2160\t2\t999\tzoom_transparent',
-		'action_presented\t24000\t3840\t2160\t2\t1333\tzoom_opaque',
+		'action_presented\t23000\t3840\t2160\t2\t300\tpan_transparent:1',
+		'action_presented\t23100\t3840\t2160\t2\t500\tpan_transparent:2',
+		'action_presented\t23333\t3840\t2160\t2\t600\tpan_opaque:1',
+		'action_presented\t23433\t3840\t2160\t2\t800\tpan_opaque:2',
+		'action_presented\t23666\t3840\t2160\t2\t900\tzoom_transparent:1',
+		'action_presented\t23766\t3840\t2160\t2\t1100\tzoom_transparent:2',
+		'action_presented\t24000\t3840\t2160\t2\t1200\tzoom_opaque:1',
+		'action_presented\t24100\t3840\t2160\t2\t1400\tzoom_opaque:2',
 		'prefetch_cached\t22000\t3840\t2160\t1\t0\tsibling.bmp',
 		'pipeline_counters\t89335\t2560\t1440\t6\t2\tdisplayed:2,skipped:0,coalesced:0,prefetch_requested:3,prefetched:1,prefetch_skipped:2,prefetch_coalesced:0,prefetch_cancelled:1,decodes:2,prefetch_decodes:1,cache_hits:4,cache_misses:2,cache_updates:1,cache_evictions:0,cache_invalidations:1,cache_content_validations:1,cache_resident_bytes:100,cache_peak_bytes:120,cache_cpu_bytes:60,cache_renderer_bytes:60,cache_budget:200',
 		'repeat_counters\t89335\t2560\t1440\t6\t16\tleft:8,right:8',
@@ -284,10 +327,22 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	assert summary.frame_median_ns == 16_667_000
 	assert summary.frame_p95_ns == 16_667_000
 	assert summary.frame_samples == 2
-	assert summary.pan_transparent_to_frame_ns == 333_000
-	assert summary.pan_opaque_to_frame_ns == 666_000
-	assert summary.zoom_transparent_to_frame_ns == 999_000
-	assert summary.zoom_opaque_to_frame_ns == 1_333_000
+	assert summary.pan_transparent_to_frame_ns == 400_000
+	assert summary.pan_transparent_median_ns == 400_000
+	assert summary.pan_transparent_p95_ns == 500_000
+	assert summary.pan_transparent_samples == 2
+	assert summary.pan_opaque_to_frame_ns == 700_000
+	assert summary.pan_opaque_median_ns == 700_000
+	assert summary.pan_opaque_p95_ns == 800_000
+	assert summary.pan_opaque_samples == 2
+	assert summary.zoom_transparent_to_frame_ns == 1_000_000
+	assert summary.zoom_transparent_median_ns == 1_000_000
+	assert summary.zoom_transparent_p95_ns == 1_100_000
+	assert summary.zoom_transparent_samples == 2
+	assert summary.zoom_opaque_to_frame_ns == 1_300_000
+	assert summary.zoom_opaque_median_ns == 1_300_000
+	assert summary.zoom_opaque_p95_ns == 1_400_000
+	assert summary.zoom_opaque_samples == 2
 	assert summary.phase_order == ['process_launch', 'window_creation', 'font_work', 'ui2_setup',
 		'gpu_context_initialization', 'first_content', 'directory_completion', 'first_input']
 	assert summary.phase_monotonic
@@ -297,8 +352,8 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	assert live_variant_actions_present(summary, 'transparent')
 	assert live_variant_actions_present(summary, 'opaque')
 	mut opaque_only := summary
-	opaque_only.pan_transparent_to_frame_ns = -1
-	opaque_only.zoom_transparent_to_frame_ns = -1
+	opaque_only.pan_transparent_samples = 0
+	opaque_only.zoom_transparent_samples = 0
 	assert live_variant_actions_present(opaque_only, 'opaque')
 	assert !live_variant_actions_present(opaque_only, 'transparent')
 }

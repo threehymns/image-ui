@@ -14,6 +14,14 @@ fn sibling_cache_test_resource(path string) ui2.ImageResource {
 }
 
 __global sibling_cache_test_decode_count = 0
+__global sibling_cache_test_validation_started = chan bool{cap: 1}
+__global sibling_cache_test_validation_release = chan bool{}
+
+fn sibling_cache_test_gated_reader(path string) SiblingFileSignature {
+	sibling_cache_test_validation_started <- true
+	_ = <-sibling_cache_test_validation_release
+	return sibling_file_content_signature(path)
+}
 
 fn sibling_cache_test_decoder(path string) !DecodedImage {
 	sibling_cache_test_decode_count++
@@ -166,19 +174,72 @@ fn test_pipeline_revalidates_current_displayed_resource_without_request_cache_hi
 		os.rm(path) or {}
 	}
 	mut pipeline := new_manual_image_pipeline()
-	pipeline.set_resident(sibling_cache_test_resource(path))
-	assert pipeline.cache.contains(path)
 	initial := sibling_file_content_signature(path)
+	pipeline.set_resident_with_signature(sibling_cache_test_resource(path), initial)
+	assert pipeline.cache.contains(path)
 	os.write_file(path, 'bbbb') or { panic(err) }
 	os.utime(path, initial.modified_unix, initial.modified_unix) or { panic(err) }
 	pipeline.current_revalidation_interval_ns = 1
 	pipeline.last_current_revalidation_ns = 0
 	assert pipeline.poll().len == 0
-	assert pipeline.current_resource_invalidated
+	mut invalidated := false
+	for _ in 0 .. 100 {
+		pipeline.poll()
+		if pipeline.current_resource_invalidated {
+			invalidated = true
+			break
+		}
+		time.sleep(1 * time.millisecond)
+	}
+	assert invalidated
 	assert !pipeline.cache.contains(path)
-	assert pipeline.resident_resource.state == .loading
+	assert pipeline.resident_resource.state == .ready
 	assert pipeline.take_current_resource_invalidated()
 	assert !pipeline.take_current_resource_invalidated()
+}
+
+fn test_pipeline_current_validation_is_nonblocking_and_invalidates_changed_digest() {
+	path := os.join_path(os.temp_dir(), 'image-ui-async-current-${time.ticks()}.png')
+	os.write_file(path, 'aaaa') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	initial := sibling_file_content_signature(path)
+	resource := sibling_cache_test_resource(path)
+	sibling_cache_test_validation_started = chan bool{cap: 1}
+	sibling_cache_test_validation_release = chan bool{}
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.current_validation_reader = sibling_cache_test_gated_reader
+	pipeline.set_resident_with_signature(resource, initial)
+	pipeline.current_revalidation_interval_ns = 1
+	pipeline.last_current_revalidation_ns = 0
+	assert pipeline.poll().len == 0
+	select {
+		<-sibling_cache_test_validation_started {
+		}
+		5 * time.second {
+			panic('current validation did not start')
+		}
+	}
+	assert pipeline.current_validation_in_flight
+	assert !pipeline.current_resource_invalidated
+	os.write_file(path, 'bbbb') or { panic(err) }
+	os.utime(path, initial.modified_unix, initial.changed_unix) or { panic(err) }
+	sibling_cache_test_validation_release <- true
+	mut invalidated := false
+	for _ in 0 .. 100 {
+		pipeline.poll()
+		if pipeline.current_resource_invalidated {
+			invalidated = true
+			break
+		}
+		time.sleep(1 * time.millisecond)
+	}
+	assert invalidated
+	assert !pipeline.current_validation_in_flight
+	assert !pipeline.cache.contains(path)
+	assert pipeline.resident_resource.state == .ready
+	assert pipeline.resident_resource.id == resource.id
 }
 
 fn test_current_revalidation_keeps_oversized_resident_when_unchanged() {
@@ -466,8 +527,8 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 	assert pipeline.prefetch_context_valid()
 	pending_after_scan := pipeline.prefetch_pending_count()
 	assert pending_after_scan == 4
-	assert pipeline.prefetch_metrics().cancelled >= 2
-	assert pipeline.prefetch_metrics().skipped >= 2
+	assert pipeline.prefetch_metrics().cancelled == 4
+	assert pipeline.prefetch_metrics().skipped == 4
 	stale_generation := pipeline.prefetch_generation()
 	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 3
@@ -478,6 +539,8 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 	})
 	assert pipeline.prefetch_scan_generation() == 5
 	assert pipeline.prefetch_generation() == stale_generation
+	assert pipeline.prefetch_metrics().cancelled == 4
+	assert pipeline.prefetch_metrics().cancelled <= pipeline.prefetch_metrics().requested
 }
 
 fn test_scanner_neighborhood_batch_starts_prefetch_for_discovered_paths() {

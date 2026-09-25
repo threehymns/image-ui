@@ -141,6 +141,16 @@ fn sibling_file_signature_matches(cached SiblingFileSignature, current SiblingFi
 	return true
 }
 
+fn sibling_file_signature_validates(cached SiblingFileSignature, current SiblingFileSignature) bool {
+	if !sibling_file_identity_matches(cached, current) {
+		return false
+	}
+	if !cached.has_content_digest {
+		return true
+	}
+	return !current.has_content_digest || cached.content_digest == current.content_digest
+}
+
 fn (mut cache SiblingResourceCache) remove_path(path string) {
 	entry := cache.entries[path] or { return }
 	cache.metrics.resident_bytes -= entry.cpu_bytes + entry.renderer_bytes
@@ -285,7 +295,7 @@ pub fn (mut cache SiblingResourceCache) get(path string, signature SiblingFileSi
 pub fn (mut cache SiblingResourceCache) revalidate(path string, signature SiblingFileSignature) bool {
 	entry := cache.entries[path] or { return false }
 	cache.metrics.content_validations++
-	if !sibling_file_signature_matches(entry.signature, signature) {
+	if !sibling_file_signature_validates(entry.signature, signature) {
 		cache.metrics.invalidations++
 		cache.remove_path(path)
 		return false

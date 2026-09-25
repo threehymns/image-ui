@@ -5,6 +5,12 @@ import time
 
 __global scanner_test_sort_release = chan bool{}
 __global scanner_test_sort_started = chan bool{cap: 1}
+__global scanner_test_source_started = chan bool{cap: 1}
+
+fn scanner_test_observed_source(path string) ![]string {
+	scanner_test_source_started <- true
+	return os.ls(path)
+}
 
 fn scanner_test_gated_sort(mut paths []string) {
 	scanner_test_sort_started <- true
@@ -75,7 +81,7 @@ fn test_find_first_image_in_dir() {
 	assert os.file_name(first) == 'img1.png'
 }
 
-fn test_scan_directory_siblings_streaming() {
+fn test_scan_directory_siblings_batches() {
 	tmp_dir := os.join_path(os.temp_dir(), 'test_scan_siblings_${time.ticks()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
 	defer {
@@ -191,13 +197,25 @@ fn test_first_content_and_neighborhood_precede_full_natural_sort() {
 	target := os.join_path(root, 'pic600.png')
 	scanner_test_sort_release = chan bool{}
 	scanner_test_sort_started = chan bool{cap: 1}
-	ch := chan SiblingBatch{cap: 4}
+	scanner_test_source_started = chan bool{cap: 1}
+	ch := chan SiblingBatch{}
 	cancel := chan bool{}
 	spawn scan_directory_siblings_with_source_and_sorter(root, target, 19, ch, cancel,
-		default_sibling_directory_source, scanner_test_gated_sort)
+		scanner_test_observed_source, scanner_test_gated_sort)
 	first := next_scan_batch(ch)
 	assert first.is_first_content
 	assert first.items == [target]
+	select {
+		<-scanner_test_source_started {
+		}
+		5 * time.second {
+			panic('scanner source did not start')
+		}
+	}
+	neighborhood := next_scan_batch(ch)
+	assert neighborhood.is_neighborhood
+	assert neighborhood.items.len == scanner_neighborhood_radius * 2 + 1
+	assert target in neighborhood.items
 	select {
 		<-scanner_test_sort_started {
 		}
@@ -205,10 +223,6 @@ fn test_first_content_and_neighborhood_precede_full_natural_sort() {
 			panic('scanner sort did not start')
 		}
 	}
-	neighborhood := next_scan_batch(ch)
-	assert neighborhood.is_neighborhood
-	assert neighborhood.items.len == scanner_neighborhood_radius * 2 + 1
-	assert target in neighborhood.items
 	scanner_test_sort_release.close()
 	mut current := neighborhood
 	for !current.is_last {
