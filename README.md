@@ -7,6 +7,7 @@ A fast, lightweight desktop image viewer system application built with [V](https
 - **Measured Performance**: Checked-in headless and live Wayland benchmarks with deterministic fixtures, cache controls, median/p95 output, and checksum gates. Sub-10ms startup and 60 FPS at 4K remain targets.
 - **Hardware-Accelerated Canvas**: Direct Sokol/`gg` rendering pipeline with continuous cursor-anchored zoom, sub-pixel pan, 90-degree step rotation, and flip.
 - **Prioritized Neighborhood Sibling Scan**: Immediate adjacent ±50 files streamed over worker channel for instant arrow navigation, with non-blocking background folder discovery.
+- **Full-Resolution Sibling LRU**: Byte-bounded current and nearby decoded resources reuse resident data without another file read or full decode.
 - **Collapsible Filmstrip**: Bounded LRU-cached preview thumbnails (max 100 textures, ~20MB VRAM).
 - **Dual Texture Filtering**: Bilinear anti-aliasing on downscaling, sharp nearest-neighbor at high magnification for pixel peeping.
 - **Desktop & Wayland Integration**: Wayland CSD protocol support (`zxdg_decoration_manager_v1_mode_client_side`), FreeDesktop `.desktop` entry, OS trash integration (`gio trash`), and clipboard copy.
@@ -51,6 +52,8 @@ Or using the V compiler directly:
 ./image-ui [path_to_image]
 ```
 
+The full-resolution Sibling cache uses `IMAGE_UI_SIBLING_CACHE_BUDGET_BYTES` for its byte budget. `IMAGE_UI_SIBLING_CACHE_NEIGHBOR_RADIUS` controls how many discovered Siblings on each side of the current image are retained. The Filmstrip Thumbnail Cache keeps its separate ADR-0003 budget.
+
 ### Running Tests
 ```bash
 make test
@@ -67,7 +70,7 @@ The live niri/Wayland smoke records process launch, first content, real key inpu
 make benchmark-wayland
 ```
 
-Use `--warmup`, `--iterations`, and `--cache` through `BENCHMARK_ARGS` to control sampling. CI only compiles the benchmark; it has no noisy wall-clock gates. See the [benchmark methodology and recorded baseline](./docs/benchmarks.md).
+Use `--warmup`, `--iterations`, `--cache`, and `--cache-budget` through `BENCHMARK_ARGS` to control sampling. CI only compiles the benchmark; it has no noisy wall-clock gates. See the [benchmark methodology and recorded baseline](./docs/benchmarks.md).
 
 ## Performance claims
 

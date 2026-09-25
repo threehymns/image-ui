@@ -11,38 +11,52 @@ pub enum BenchmarkCacheSelection {
 
 pub struct BenchmarkConfig {
 pub mut:
-	warmup     int                     = 2
-	iterations int                     = 10
-	cache      BenchmarkCacheSelection = .both
-	fixtures   string
+	warmup             int                     = 2
+	iterations         int                     = 10
+	cache              BenchmarkCacheSelection = .both
+	fixtures           string
+	cache_budget_bytes int
 }
 
 pub struct BenchmarkSample {
 pub:
-	elapsed_ns i64
-	checksum   u64
+	elapsed_ns      i64
+	checksum        u64
+	cache_hits      int
+	cache_misses    int
+	cache_updates   int
+	cache_evictions int
+	cache_bytes     int
+	cache_budget    int
 }
 
 pub struct BenchmarkResult {
 pub:
-	name       string
-	fixture    string
-	cache      string
-	warmup     int
-	iterations int
-	median_ns  i64
-	p95_ns     i64
-	checksum   u64
-	verified   bool
+	name            string
+	fixture         string
+	cache           string
+	warmup          int
+	iterations      int
+	median_ns       i64
+	p95_ns          i64
+	checksum        u64
+	verified        bool
+	cache_hits      int
+	cache_misses    int
+	cache_updates   int
+	cache_evictions int
+	cache_bytes     int
+	cache_budget    int
 }
 
 struct BenchmarkOperation {
 pub mut:
-	kind   string
-	path   string
-	width  int
-	height int
-	cache  string
+	kind               string
+	path               string
+	width              int
+	height             int
+	cache              string
+	cache_budget_bytes int
 }
 
 struct BenchmarkRunner {
@@ -136,6 +150,16 @@ fn parse_benchmark_config(args []string) !BenchmarkConfig {
 				}
 				config.fixtures = args[index]
 			}
+			'--cache-budget' {
+				index++
+				if index >= args.len {
+					return error('--cache-budget requires a byte count')
+				}
+				config.cache_budget_bytes = args[index].int()
+				if config.cache_budget_bytes < 0 {
+					return error('--cache-budget cannot be negative')
+				}
+			}
 			else {
 				return error('unknown option: ${args[index]}')
 			}
@@ -149,6 +173,13 @@ fn parse_benchmark_config(args []string) !BenchmarkConfig {
 		return error('iterations must be at least 2 for p95 reporting')
 	}
 	return config
+}
+
+fn benchmark_cache_budgets(config BenchmarkConfig) []int {
+	if config.cache_budget_bytes > 0 {
+		return [config.cache_budget_bytes]
+	}
+	return [16 * 1024, 32 * 1024, 64 * 1024]
 }
 
 fn run_headless_benchmark(config BenchmarkConfig) ! {
@@ -181,6 +212,40 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		path:  fixtures.large_4k
 		cache: 'no-app-cache'
 	})
+	for budget_bytes in benchmark_cache_budgets(config) {
+		if config.cache == .cold || config.cache == .both {
+			runner.add(BenchmarkOperation{
+				kind:               'sibling_cache_cold'
+				path:               fixtures.opaque
+				cache:              'sibling-lru'
+				cache_budget_bytes: budget_bytes
+			})
+		}
+		if config.cache == .warm || config.cache == .both {
+			runner.add(BenchmarkOperation{
+				kind:               'sibling_cache_warm'
+				path:               fixtures.opaque
+				cache:              'sibling-lru'
+				cache_budget_bytes: budget_bytes
+			})
+		}
+	}
+	if config.cache == .cold || config.cache == .both {
+		runner.add(BenchmarkOperation{
+			kind:               'sibling_cache_4k_cold'
+			path:               fixtures.large_4k
+			cache:              'sibling-lru'
+			cache_budget_bytes: 256 * 1024 * 1024
+		})
+	}
+	if config.cache == .warm || config.cache == .both {
+		runner.add(BenchmarkOperation{
+			kind:               'sibling_cache_4k_warm'
+			path:               fixtures.large_4k
+			cache:              'sibling-lru'
+			cache_budget_bytes: 256 * 1024 * 1024
+		})
+	}
 	runner.add(BenchmarkOperation{
 		kind:  'sibling_discovery'
 		path:  fixtures.sibling(0)
@@ -251,17 +316,18 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	println('compiler=${build.compiler}')
 	println('compile_flags=${build.compile_flag}')
 	println('hardware=${hardware.os_name} ${hardware.architecture} cpu=${hardware.cpu_model} logical_cpus=${hardware.logical_cpus} memory=${hardware.memory} gpu_driver=${hardware.gpu_driver}')
-	println('config=warmup:${config.warmup} iterations:${config.iterations} cache:${benchmark_cache_name(config.cache)}')
+	println('config=warmup:${config.warmup} iterations:${config.iterations} cache:${benchmark_cache_name(config.cache)} cache_budget_override:${config.cache_budget_bytes}')
 	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
-	println('cache_note=image rows have no application cache; filesystem cache state is uncontrolled')
+	println('cache_note=image rows have no application cache; sibling-lru rows use the full-resolution resource cache')
+	println('cache_separation=Filmstrip Thumbnail Cache remains a separate cache and is not included in sibling-lru budget accounting')
 	println('pattern_note=the Viewer uses one 32x32 logical repeat tile; no full-window raster is generated')
 	println('measurement=screen rows build UI2 elements only and do not include GPU submission')
-	println('| case | fixture | cache | warmup | iterations | median ms | p95 ms | checksum | status |')
-	println('| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |')
+	println('| case | fixture | cache | budget bytes | warmup | iterations | median ms | p95 ms | hits | misses | updates | evictions | resident bytes | checksum | status |')
+	println('| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |')
 	mut verified := true
 	for result in runner.results {
 		status := if result.verified { 'ok' } else { 'checksum-mismatch' }
-		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.checksum.hex()} | ${status} |')
+		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.cache_budget} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.cache_hits} | ${result.cache_misses} | ${result.cache_updates} | ${result.cache_evictions} | ${result.cache_bytes} | ${result.checksum.hex()} | ${status} |')
 		verified = verified && result.verified
 	}
 	if owned_root {
@@ -279,10 +345,20 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 	mut samples := []i64{}
 	mut expected := u64(0)
 	mut verified := true
+	mut sample_cache_hits := 0
+	mut sample_cache_misses := 0
+	mut sample_cache_updates := 0
+	mut sample_cache_evictions := 0
+	mut sample_cache_bytes := 0
 	for iteration in 0 .. runner.config.iterations {
 		sample := execute_benchmark_operation(operation, iteration)
 		if iteration == 0 {
 			expected = sample.checksum
+			sample_cache_hits = sample.cache_hits
+			sample_cache_misses = sample.cache_misses
+			sample_cache_updates = sample.cache_updates
+			sample_cache_evictions = sample.cache_evictions
+			sample_cache_bytes = sample.cache_bytes
 		} else if sample.checksum != expected {
 			verified = false
 		}
@@ -295,15 +371,21 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 		operation.path
 	}
 	runner.results << BenchmarkResult{
-		name:       operation.kind
-		fixture:    fixture
-		cache:      operation.cache
-		warmup:     runner.config.warmup
-		iterations: runner.config.iterations
-		median_ns:  stats.median_ns
-		p95_ns:     stats.p95_ns
-		checksum:   expected
-		verified:   verified
+		name:            operation.kind
+		fixture:         fixture
+		cache:           operation.cache
+		warmup:          runner.config.warmup
+		iterations:      runner.config.iterations
+		median_ns:       stats.median_ns
+		p95_ns:          stats.p95_ns
+		checksum:        expected
+		verified:        verified
+		cache_hits:      sample_cache_hits
+		cache_misses:    sample_cache_misses
+		cache_updates:   sample_cache_updates
+		cache_evictions: sample_cache_evictions
+		cache_bytes:     sample_cache_bytes
+		cache_budget:    operation.cache_budget_bytes
 	}
 }
 
@@ -357,6 +439,46 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 			return BenchmarkSample{
 				elapsed_ns: elapsed
 				checksum:   benchmark_checksum(pattern.pixels)
+			}
+		}
+		'sibling_cache_cold', 'sibling_cache_warm', 'sibling_cache_4k_cold', 'sibling_cache_4k_warm' {
+			mut cache := new_sibling_resource_cache(operation.cache_budget_bytes)
+			mut checksum := u64(0)
+			mut elapsed := i64(0)
+			if operation.kind == 'sibling_cache_warm' || operation.kind == 'sibling_cache_4k_warm' {
+				decoded := decode_stbi_image(operation.path) or { panic(err) }
+				resource := image_resource_from_decoded('benchmark-cache', operation.path, decoded)
+				signature := sibling_file_signature(operation.path)
+				cache.put(operation.path, signature, resource, decoded.pixels.len, decoded.renderer_bytes)
+				mut stopwatch := time.new_stopwatch()
+				elapsed = stopwatch.elapsed().nanoseconds()
+				mut hit := false
+				if cached := cache.get(operation.path, signature) {
+					hit = true
+					checksum = benchmark_checksum_u64(checksum, u64(cached.width()))
+					checksum = benchmark_checksum_u64(checksum, u64(cached.height()))
+				}
+				checksum = benchmark_checksum_u64(checksum, u64(hit))
+			} else {
+				mut stopwatch := time.new_stopwatch()
+				signature := sibling_file_signature(operation.path)
+				decoded := decode_stbi_image(operation.path) or { panic(err) }
+				resource := image_resource_from_decoded('benchmark-cache', operation.path, decoded)
+				accepted := cache.put(operation.path, signature, resource, decoded.pixels.len, decoded.renderer_bytes)
+				elapsed = stopwatch.elapsed().nanoseconds()
+				checksum = benchmark_checksum_u64(checksum, u64(decoded.width))
+				checksum = benchmark_checksum_u64(checksum, u64(decoded.height))
+				checksum = benchmark_checksum_u64(checksum, u64(accepted))
+			}
+			return BenchmarkSample{
+				elapsed_ns:      elapsed
+				checksum:        checksum
+				cache_hits:      cache.metrics.hits
+				cache_misses:    cache.metrics.misses
+				cache_updates:   cache.metrics.updates
+				cache_evictions: cache.metrics.evictions
+				cache_bytes:     cache.metrics.resident_bytes
+				cache_budget:    operation.cache_budget_bytes
 			}
 		}
 		'screen_construct_4k', 'screen_resize_to_4k', 'frame_prepare_4k', 'startup_cpu' {
@@ -520,6 +642,7 @@ fn print_benchmark(title string) {
 fn print_benchmark_help() {
 	print_benchmark('Viewer benchmark')
 	println('usage: make benchmark [BENCHMARK_ARGS="--warmup 2 --iterations 10 --cache both"]')
+	println('usage: make benchmark BENCHMARK_ARGS="--cache-budget 67108864"')
 	println('usage: ./image-ui-benchmark --prepare-fixtures <directory>')
 	println('usage: make benchmark-wayland')
 	println('headless measures image metadata decode, screen construction, resize, navigation, pattern-tile creation, and frame preparation without opening a display')

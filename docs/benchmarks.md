@@ -1,6 +1,6 @@
 # Viewer performance benchmarks
 
-The root benchmark suite measures the current Viewer before later image-resource, cache, and background-work changes land. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
+The root benchmark suite measures the current Viewer, including the full-resolution Sibling resource cache. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
 
 ## Commands
 
@@ -16,6 +16,7 @@ The default is two warmup iterations followed by 10 measured iterations. Overrid
 make benchmark BENCHMARK_ARGS="--warmup 3 --iterations 20 --cache both"
 make benchmark BENCHMARK_ARGS="--cache cold"
 make benchmark BENCHMARK_ARGS="--cache warm"
+make benchmark BENCHMARK_ARGS="--cache-budget 67108864"
 ```
 
 Compile without running measurements:
@@ -58,6 +59,8 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 | Case | What the timer covers |
 | --- | --- |
 | `image_load_alpha`, `image_load_opaque`, `image_load_4k` | File read, `stbi` metadata decode, and decode free through the production `load_image_metadata` seam |
+| `sibling_cache_cold`, `sibling_cache_warm` | Full-resolution decode, signature capture, cache insertion, and resident lookup at the selected byte budget |
+| `sibling_cache_4k_cold`, `sibling_cache_4k_warm` | The same cache path with the 4K fixture and a 256 MiB budget |
 | `sibling_discovery` | Spawn, complete directory enumeration, natural sort, channel batches, and final batch through the current scanner |
 | `sibling_navigation` | Playlist step plus the current synchronous metadata decode |
 | `frame_prepare_4k` | Zoom, pan, and 4K screen-element construction with one logical repeat tile |
@@ -68,14 +71,15 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 `screen_construct_4k` and `frame_prepare_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements.
 
-Every row includes warmup count, fixed iteration count, cache label, median, p95, and a returned-value checksum. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
+Every row includes warmup count, fixed iteration count, cache label, byte budget, median, p95, cache metrics where applicable, and a returned-value checksum. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
 
 ## Cache controls
 
-`--cache cold`, `--cache warm`, and `--cache both` select which screen-construction cases are run. The transparency background is a logical repeat tile and has no file cache.
+`--cache cold`, `--cache warm`, and `--cache both` select which screen and Sibling-cache cases are run. `--cache-budget` replaces the default 16 KiB, 32 KiB, and 64 KiB Sibling-cache budgets with one byte value. The transparency background is a logical repeat tile and has no file cache.
 
 - Pattern rows reuse the same 32x32 tile and do not allocate a window-sized raster.
-- Image decode has no application cache in the current Viewer. Its rows say `no-app-cache`; filesystem page-cache state is not claimed or forcibly controlled.
+- `sibling-lru` rows use the full-resolution Sibling resource cache. Their resident-byte totals include decoded CPU bytes and renderer bytes exposed by the production resource path.
+- The Filmstrip Thumbnail Cache remains separate under ADR-0003. No Filmstrip rows are included in the Sibling-cache measurements.
 - Live cold and warm labels describe separate process runs; they do not control a checkerboard file.
 
 ## Live Wayland smoke
