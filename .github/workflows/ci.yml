@@ -66,7 +66,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --quiet -y --no-install-recommends \
-            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libasound2-dev libwayland-dev libxkbcommon-dev
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libasound2-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Build
         run: make build
