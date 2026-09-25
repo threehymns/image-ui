@@ -64,7 +64,7 @@ fn test_t_toggle_reflects_in_build_screen() {
 	app.window_ready = true
 
 	mut screen := app.build_screen()
-	assert screen.children[0].id == 'checkerboard_layer'
+	assert screen.children[0].id == 'transparency_background'
 	assert screen.children[screen.children.len - 1].id == 'canvas_bg'
 
 	app.handle_key_event(ui2.KeyEvent{

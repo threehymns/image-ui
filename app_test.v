@@ -3,6 +3,7 @@ module main
 import os
 import math
 import time
+import ui2
 
 fn test_app_initialization_and_load() {
 	mut app := new_app()
@@ -95,6 +96,43 @@ fn test_app_actions_rotation_and_flip() {
 	assert app.viewport.flip_v
 }
 
+fn test_transparency_background_follows_displayed_resource_during_pending_request() {
+	mut app := new_app()
+	app.set_image_loaded('opaque.png', 10, 10)
+	app.image_resource = ui2.ready_image_resource('opaque', 'opaque.png', ui2.ImageResourceInput{
+		width:    1
+		height:   1
+		channels: 4
+		pixels:   []u8{len: 4, init: 255}
+	}, .proven_opaque)
+	app.displayed_resource = app.image_resource
+	app.image_resource = ui2.loading_image_resource('pending-opaque', 'next.png')
+	assert !app.transparency_background_visible()
+
+	app.set_image_loaded('alpha.png', 10, 10)
+	app.image_resource = ui2.ready_image_resource('alpha', 'alpha.png', ui2.ImageResourceInput{
+		width:    1
+		height:   1
+		channels: 4
+		pixels:   []u8{len: 4, init: 255}
+	}, .has_alpha)
+	app.displayed_resource = app.image_resource
+	app.image_resource = ui2.loading_image_resource('pending-alpha', 'next.png')
+	assert app.transparency_background_visible()
+}
+
+fn test_transparency_background_keeps_pattern_for_unknown_without_opaque_display() {
+	mut app := new_app()
+	assert app.transparency_background_visible()
+	app.image_resource = ui2.ready_image_resource('unknown', 'unknown.png', ui2.ImageResourceInput{
+		width:    1
+		height:   1
+		channels: 4
+		pixels:   []u8{len: 4, init: 255}
+	}, .unknown)
+	assert app.transparency_background_visible()
+}
+
 fn test_app_toggle_fit_and_actual() {
 	mut app := new_app()
 	app.set_canvas_size(960, 540)
@@ -141,11 +179,13 @@ fn test_app_playlist_navigation() {
 	assert app.playlist == ['/photos/img5.png']
 	assert app.active_index == 0
 
-	// Integrate neighborhood batch
+	// Integrate Neighborhood batch
 	batch := SiblingBatch{
-		items:           ['/photos/img1.png', '/photos/img2.png', '/photos/img5.png', '/photos/img10.png', '/photos/img20.png']
+		items:           ['/photos/img1.png', '/photos/img2.png', '/photos/img5.png',
+			'/photos/img10.png', '/photos/img20.png']
 		is_neighborhood: true
 		is_last:         true
+		generation:      app.scan_generation
 	}
 	app.integrate_batch(batch)
 	assert app.playlist.len == 5
@@ -185,11 +225,12 @@ fn test_app_progressive_batch_integration_preserves_active() {
 	mut app := new_app()
 	app.open_path('/photos/pic50.png')
 
-	// First batch: neighborhood of 50..60
+	// First batch: Neighborhood of 50..60
 	batch1 := SiblingBatch{
 		items:           ['/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
 		is_neighborhood: true
 		is_last:         false
+		generation:      app.scan_generation
 	}
 	app.integrate_batch(batch1)
 	assert app.active_index == 0
@@ -207,11 +248,13 @@ fn test_app_progressive_batch_integration_preserves_active() {
 		items:           ['/photos/pic10.png', '/photos/pic20.png']
 		is_neighborhood: false
 		is_last:         true
+		generation:      app.scan_generation
 	}
 	app.integrate_batch(batch2)
 
 	// Playlist should now be naturally sorted: [pic10, pic20, pic50, pic51, pic52]
-	assert app.playlist == ['/photos/pic10.png', '/photos/pic20.png', '/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
+	assert app.playlist == ['/photos/pic10.png', '/photos/pic20.png', '/photos/pic50.png',
+		'/photos/pic51.png', '/photos/pic52.png']
 	// Active image must still be pic51, now at index 3
 	assert app.active_sibling_path() == '/photos/pic51.png'
 	assert app.active_index == 3
@@ -219,7 +262,27 @@ fn test_app_progressive_batch_integration_preserves_active() {
 	assert app.scan_complete == true
 }
 
-fn test_app_open_directory() {
+fn test_app_ignores_stale_scanner_generation() {
+	mut app := new_app()
+	app.open_path('/photos/current.png')
+	app.invalidate_scan()
+	generation := app.scan_generation
+	app.begin_scan(generation)
+	before := app.playlist.clone()
+	old_ch := chan SiblingBatch{cap: 1}
+	spawn scan_directory_siblings_with_generation('/path/that/does/not/exist', '', generation - 1, old_ch)
+	stale := next_app_scan_batch(old_ch)
+	assert stale.generation == generation - 1
+
+	app.integrate_batch(stale)
+
+	assert app.playlist == before
+	assert app.target_path == '/photos/current.png'
+	assert app.is_scanning == true
+	assert app.scan_complete == false
+}
+
+fn test_app_open_directory_defers_selection() {
 	tmp_dir := os.join_path(os.temp_dir(), 'test_app_dir_${time.ticks()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
 	defer {
@@ -232,11 +295,62 @@ fn test_app_open_directory() {
 	mut app := new_app()
 	app.open_path(tmp_dir)
 
-	// Automatically resolves first image in natural sort order (img1.png)
-	assert app.target_path == os.join_path(tmp_dir, 'img1.png')
-	assert app.playlist.len == 1
+	assert app.target_path == tmp_dir
+	assert app.playlist.len == 0
 	assert app.active_index == 0
+	assert app.has_first_content == false
 	assert app.is_scanning == true
+	assert app.scan_complete == false
+}
+
+fn next_app_scan_batch(ch chan SiblingBatch) SiblingBatch {
+	select {
+		batch := <-ch {
+			return batch
+		}
+		5 * time.second {
+			panic('scanner batch timeout')
+		}
+	}
+	return SiblingBatch{}
+}
+
+fn test_app_directory_first_content_before_completion() {
+	tmp_dir := os.join_path(os.temp_dir(), 'test_app_first_${time.ticks()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	for name in ['img10.png', 'img2.png', 'img1.png', 'img3.png'] {
+		os.write_file(os.join_path(tmp_dir, name), 'data') or { panic(err) }
+	}
+
+	mut app := new_app()
+	app.open_path(tmp_dir)
+	ch := chan SiblingBatch{cap: 4}
+	spawn scan_directory_siblings_with_generation(tmp_dir, '', app.scan_generation, ch)
+
+	first := next_app_scan_batch(ch)
+	assert first.is_first_content == true
+	assert first.is_neighborhood == false
+	assert first.is_last == false
+	assert first.items == [os.join_path(tmp_dir, 'img1.png')]
+	app.integrate_batch(first)
+	assert app.has_first_content == true
+	assert app.is_scanning == true
+	assert app.scan_complete == false
+	assert app.target_path == os.join_path(tmp_dir, 'img1.png')
+
+	mut current := first
+	for !current.is_last {
+		current = next_app_scan_batch(ch)
+		app.integrate_batch(current)
+	}
+	assert app.scan_complete == true
+	assert app.playlist.len == 4
+	assert app.playlist[0] == os.join_path(tmp_dir, 'img1.png')
+	assert app.playlist[3] == os.join_path(tmp_dir, 'img10.png')
 }
 
 fn test_app_first_image_centered_after_canvas_resize() {

@@ -3,6 +3,27 @@ module main
 import os
 import time
 
+__global scanner_test_sort_release = chan bool{}
+__global scanner_test_sort_started = chan bool{cap: 1}
+__global scanner_test_source_started = chan bool{cap: 1}
+
+fn scanner_test_observed_source(path string) ![]string {
+	scanner_test_source_started <- true
+	return os.ls(path)
+}
+
+fn scanner_test_gated_sort(mut paths []string) {
+	scanner_test_sort_started <- true
+	_ = <-scanner_test_sort_release
+	natural_sort(mut paths)
+}
+
+fn scanner_test_finished(ch chan SiblingBatch, cancel chan bool, done chan bool) {
+	scan_directory_siblings_with_source_and_sorter(os.dir(os.executable()), '', 1, ch,
+		cancel, default_sibling_directory_source, scanner_test_gated_sort)
+	done <- true
+}
+
 fn test_natural_compare_strings() {
 	assert natural_compare_strings('img1.png', 'img2.png') < 0
 	assert natural_compare_strings('img2.png', 'img10.png') < 0
@@ -60,7 +81,7 @@ fn test_find_first_image_in_dir() {
 	assert os.file_name(first) == 'img1.png'
 }
 
-fn test_scan_directory_siblings_streaming() {
+fn test_scan_directory_siblings_batches() {
 	tmp_dir := os.join_path(os.temp_dir(), 'test_scan_siblings_${time.ticks()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
 	defer {
@@ -106,16 +127,20 @@ fn test_scan_directory_siblings_streaming() {
 		}
 	}
 
-	// Verify prioritized neighborhood batch came first
+	// Verify prioritized Neighborhood batch came first
 	assert batches.len >= 2
 	first_batch := batches[0]
-	assert first_batch.is_neighborhood == true
-	assert first_batch.is_last == false
+	assert first_batch.is_neighborhood == false
+	assert first_batch.is_first_content == true
+	assert first_batch.items == [target]
+	neighborhood_batch := batches[1]
+	assert neighborhood_batch.is_neighborhood == true
+	assert neighborhood_batch.is_last == false
 	// Neighborhood of target pic60 (at index 59) should contain ±50 files (101 items)
-	assert first_batch.items.len == 101
+	assert neighborhood_batch.items.len == 101
 
-	// Verify target is present in neighborhood
-	assert target in first_batch.items
+	// Verify target is present in Neighborhood
+	assert target in neighborhood_batch.items
 
 	// Verify all 120 files were delivered
 	assert all_streamed.len == 120
@@ -125,4 +150,164 @@ fn test_scan_directory_siblings_streaming() {
 	// Verify final batch marked is_last == true
 	last_batch := batches[batches.len - 1]
 	assert last_batch.is_last == true
+}
+
+fn next_scan_batch(ch chan SiblingBatch) SiblingBatch {
+	select {
+		batch := <-ch {
+			return batch
+		}
+		5 * time.second {
+			panic('scanner batch timeout')
+		}
+	}
+	return SiblingBatch{}
+}
+
+fn run_cancelled_scan(ch chan SiblingBatch, cancel chan bool, done chan bool) {
+	scan_directory_siblings_with_generation_and_cancel('/path/that/does/not/exist', '', 1, ch, cancel)
+	done <- true
+}
+
+fn test_scanner_cancellation_stops_worker() {
+	ch := chan SiblingBatch{cap: 1}
+	cancel := chan bool{}
+	done := chan bool{cap: 1}
+	spawn run_cancelled_scan(ch, cancel, done)
+	cancel.close()
+
+	select {
+		<-done {
+		}
+		5 * time.second {
+			panic('scanner cancellation timeout')
+		}
+	}
+}
+
+fn test_first_content_and_neighborhood_precede_full_natural_sort() {
+	root := os.join_path(os.temp_dir(), 'test_scan_before_sort_${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	for index in 1 .. 1201 {
+		os.write_file(os.join_path(root, 'pic${index}.png'), 'fixture') or { panic(err) }
+	}
+	target := os.join_path(root, 'pic600.png')
+	scanner_test_sort_release = chan bool{}
+	scanner_test_sort_started = chan bool{cap: 1}
+	scanner_test_source_started = chan bool{cap: 1}
+	ch := chan SiblingBatch{}
+	cancel := chan bool{}
+	spawn scan_directory_siblings_with_source_and_sorter(root, target, 19, ch, cancel,
+		scanner_test_observed_source, scanner_test_gated_sort)
+	first := next_scan_batch(ch)
+	assert first.is_first_content
+	assert first.items == [target]
+	select {
+		<-scanner_test_source_started {
+		}
+		5 * time.second {
+			panic('scanner source did not start')
+		}
+	}
+	neighborhood := next_scan_batch(ch)
+	assert neighborhood.is_neighborhood
+	assert neighborhood.items.len == scanner_neighborhood_radius * 2 + 1
+	assert target in neighborhood.items
+	select {
+		<-scanner_test_sort_started {
+		}
+		5 * time.second {
+			panic('scanner sort did not start')
+		}
+	}
+	scanner_test_sort_release.close()
+	mut current := neighborhood
+	for !current.is_last {
+		current = next_scan_batch(ch)
+	}
+}
+
+fn test_cancelled_stale_generation_scan_emits_no_batch() {
+	ch := chan SiblingBatch{}
+	cancel := chan bool{}
+	cancel.close()
+	done := chan bool{cap: 1}
+	spawn scanner_test_finished(ch, cancel, done)
+	select {
+		<-done {
+		}
+		5 * time.second {
+			panic('stale scanner did not stop')
+		}
+	}
+	select {
+		<-ch {
+			assert false
+		}
+		else {
+		}
+	}
+}
+
+fn test_scan_directory_siblings_large_directory_first_content_before_completion() {
+	tmp_dir := os.join_path(os.temp_dir(), 'test_scan_large_${time.ticks()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	mut expected_files := []string{}
+	for i in 1 .. 1201 {
+		path := os.join_path(tmp_dir, 'pic${i}.png')
+		os.write_file(path, 'fake') or { panic(err) }
+		expected_files << path
+	}
+	os.write_file(os.join_path(tmp_dir, '.hidden.png'), 'fake') or { panic(err) }
+	os.write_file(os.join_path(tmp_dir, 'notes.txt'), 'fake') or { panic(err) }
+	os.mkdir(os.join_path(tmp_dir, 'nested.png')) or { panic(err) }
+	natural_sort(mut expected_files)
+
+	target := os.join_path(tmp_dir, 'pic600.png')
+	generation := 73
+	ch := chan SiblingBatch{cap: 8}
+	spawn scan_directory_siblings_with_generation(tmp_dir, target, generation, ch)
+
+	first := next_scan_batch(ch)
+	assert first.generation == generation
+	assert first.is_neighborhood == false
+	assert first.is_first_content == true
+	assert first.is_last == false
+	assert first.items == [target]
+	neighborhood := next_scan_batch(ch)
+	assert neighborhood.generation == generation
+	assert neighborhood.is_neighborhood == true
+	assert neighborhood.items.len == 101
+	assert target in neighborhood.items
+
+	mut all_streamed := []string{}
+	mut batches := 0
+	mut current := neighborhood
+	for {
+		batches++
+		for item in current.items {
+			if item !in all_streamed {
+				all_streamed << item
+			}
+		}
+		if current.is_last {
+			break
+		}
+		current = next_scan_batch(ch)
+	}
+
+	assert batches > 1
+	assert all_streamed.len == expected_files.len
+	natural_sort(mut all_streamed)
+	assert all_streamed == expected_files
+	assert os.join_path(tmp_dir, '.hidden.png') !in all_streamed
+	assert os.join_path(tmp_dir, 'notes.txt') !in all_streamed
+	assert os.join_path(tmp_dir, 'nested.png') !in all_streamed
 }

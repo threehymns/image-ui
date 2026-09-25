@@ -1,4 +1,5 @@
 image-ui
+image-ui-benchmark
 *.exe
 *.o
 *.a
