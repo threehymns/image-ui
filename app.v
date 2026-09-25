@@ -1,6 +1,7 @@
 module main
 
 import os
+import ui2
 
 // App represents the headless application controller and state machine.
 // It maintains playlist, image metadata, and viewport transformation state
@@ -8,6 +9,7 @@ import os
 pub struct App {
 pub mut:
 	target_path      string
+	image_resource   ui2.ImageResource
 	has_image        bool
 	img_width        int
 	img_height       int
@@ -76,8 +78,7 @@ pub fn (mut app App) set_canvas_size(w int, h int) {
 	}
 }
 
-// set_image_loaded updates image metadata and resets viewport to initial fit.
-pub fn (mut app App) set_image_loaded(path string, w int, h int) {
+fn (mut app App) set_image_metadata(path string, w int, h int) {
 	app.target_path = path
 	app.has_image = true
 	app.img_width = w
@@ -89,7 +90,6 @@ pub fn (mut app App) set_image_loaded(path string, w int, h int) {
 		app.playlist = [path]
 		app.active_index = 0
 	} else if path != '' {
-		// Ensure active_index matches path if it exists in playlist
 		for i, p in app.playlist {
 			if p == path || os.file_name(p) == os.file_name(path) {
 				app.active_index = i
@@ -103,8 +103,32 @@ pub fn (mut app App) set_image_loaded(path string, w int, h int) {
 	}
 }
 
+pub fn (mut app App) set_image_loaded(path string, w int, h int) {
+	app.image_resource = ui2.legacy_image_resource(path, w, h)
+	app.set_image_metadata(path, w, h)
+}
+
+pub fn (mut app App) set_image_resource(resource ui2.ImageResource) {
+	app.image_resource = resource
+	match resource.state {
+		.loading {}
+		.ready {
+			app.set_image_metadata(resource.source, resource.width(), resource.height())
+		}
+		.error {
+			app.target_path = resource.source
+			app.has_image = false
+			app.img_width = 0
+			app.img_height = 0
+			app.error_msg = resource.error
+			app.viewport_init = false
+		}
+	}
+}
+
 // set_error registers a file load or system failure.
 pub fn (mut app App) set_error(path string, msg string) {
+	app.image_resource = ui2.error_image_resource('', path, msg)
 	app.target_path = path
 	app.has_image = false
 	app.img_width = 0
