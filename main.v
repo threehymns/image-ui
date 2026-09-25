@@ -20,6 +20,7 @@ pub struct ViewerApp {
 pub mut:
 	core                       App
 	image_loader               ImageResourceLoader
+	image_pipeline             ImagePipeline
 	window_ready               bool
 	is_dragging                bool
 	drag_prev_x                f64
@@ -104,6 +105,55 @@ fn (mut app ViewerApp) ensure_image_loader() {
 	}
 }
 
+fn (mut app ViewerApp) ensure_image_pipeline() {
+	app.ensure_image_loader()
+	if !app.image_pipeline.configured {
+		app.image_pipeline = new_image_pipeline(app.image_loader.decoder)
+	} else if !app.image_pipeline.manual && voidptr(app.image_pipeline.decoder) == unsafe { nil } {
+		app.image_pipeline.decoder = app.image_loader.decoder
+	}
+	if !app.core.has_image {
+		app.image_pipeline.clear_resident()
+	} else if app.core.displayed_resource.state == .ready
+		&& (app.image_pipeline.resident_resource.state != .ready
+			|| app.image_pipeline.resident_resource.source != app.core.displayed_resource.source) {
+		app.image_pipeline.set_resident(app.core.displayed_resource)
+	}
+}
+
+pub fn (mut app ViewerApp) poll_image_pipeline() {
+	if !app.image_pipeline.configured {
+		return
+	}
+	results := app.image_pipeline.poll()
+	for result in results {
+		if app.core.commit_image_request(result.request, result.resource) {
+			if result.resource.state == .ready {
+				app.image_pipeline.set_resident(result.resource)
+			}
+			app.image_pipeline.mark_committed(result.request)
+			app.update_window_title()
+		}
+	}
+}
+
+pub fn (mut app ViewerApp) request_image(path string, reason string) {
+	if path == '' {
+		app.core.set_error('', '')
+		app.update_window_title()
+		return
+	}
+	if os.is_dir(path) {
+		app.start_scanner(path, '', false)
+		app.update_window_title()
+		return
+	}
+	app.ensure_image_pipeline()
+	request := app.core.request_image(path, reason)
+	app.image_pipeline.request_with_generation(path, reason, request.generation)
+	app.update_window_title()
+}
+
 fn (mut app ViewerApp) start_scanner(dir_path string, target_path string, force bool) {
 	mut clean_dir := os.real_path(dir_path)
 	if clean_dir == '' {
@@ -140,29 +190,13 @@ fn (mut app ViewerApp) load_image_internal(path string, start_scan bool, force_s
 		return
 	}
 
-	if !os.exists(path) {
-		app.core.set_error(path, 'File not found: ${path}')
-		app.update_window_title()
-		return
-	}
-
 	if os.is_dir(path) {
 		app.start_scanner(path, '', force_scan)
 		app.update_window_title()
 		return
 	}
 
-	if !app.core.has_image || app.core.image_resource.id.len == 0
-		|| app.core.image_resource.source != path
-		|| app.core.image_resource.state != .ready {
-		app.ensure_image_loader()
-		resource := app.image_loader.load(path)
-		app.core.set_image_resource(resource)
-		if resource.state != .ready {
-			app.update_window_title()
-			return
-		}
-	}
+	app.request_image(path, 'load')
 	if start_scan {
 		app.start_scanner(os.dir(path), path, force_scan)
 	}
@@ -242,6 +276,7 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 }
 
 pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Element {
+	app.poll_image_pipeline()
 	$if viewer_benchmark ? {
 		app.benchmark_live.begin_frame(win_w, win_h)
 	}
@@ -265,11 +300,16 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 		// draggable targets, and a clickable-only image on top would swallow
 		// the gesture and break click-and-drag panning. All pointer gestures
 		// fall through to the draggable canvas below.
-		mut img_el := if app.core.image_resource.id.len > 0
-			&& app.core.image_resource.state == .ready {
+		displayed_resource := app.core.displayed_image_resource()
+		mut displayed_path := displayed_resource.source
+		if displayed_path.len == 0 {
+			displayed_path = app.core.target_path
+		}
+		mut img_el := if displayed_resource.id.len > 0
+			&& displayed_resource.state == .ready {
 			ui2.transformed_image_resource(
 				'viewport_image',
-				app.core.image_resource,
+				displayed_resource,
 				ui2.rect(f64(img_rect.x), f64(img_rect.y), f64(img_rect.width), f64(img_rect.height)),
 				f64(norm_rot),
 				false,
@@ -277,7 +317,7 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 		} else {
 			ui2.transformed_image(
 				'viewport_image',
-				app.core.target_path,
+				displayed_path,
 				ui2.rect(f64(img_rect.x), f64(img_rect.y), f64(img_rect.width), f64(img_rect.height)),
 				f64(norm_rot),
 				false,
@@ -308,6 +348,35 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 		screen_children << ui2.draggable_view_with_cursor('canvas_bg',
 			ui2.rect(0, 0, f64(win_w), f64(win_h)),
 			ui2.BoxStyle{ transparent: true }, 'pointing_hand', [img_el])
+		if app.core.error_msg != '' {
+			error_w := f64(if win_w - 80 < 420 { math.max(120, win_w - 40) } else { 420 })
+			error_h := f64(112)
+			error_x := (f64(win_w) - error_w) / 2.0
+			error_y := (f64(win_h) - error_h) / 2.0
+			screen_children << ui2.view('error_card', ui2.rect(error_x, error_y, error_w, error_h),
+				ui2.BoxStyle{
+					bg:            canvas_bg_hex
+					border_color:  drop_target_border_hex
+					border_left:   1
+					border_top:    1
+					border_right:  1
+					border_bottom: 1
+					radius:        6
+				}, [
+					ui2.label('err_label', app.core.error_msg,
+						ui2.rect(12, 28, error_w - 24, 24), ui2.TextStyle{
+							size:  14
+							color: error_text_hex
+							align: .center
+						}),
+					ui2.label('err_sublabel', 'Drop another image or open via CLI',
+						ui2.rect(12, 62, error_w - 24, 20), ui2.TextStyle{
+							size:  13
+							color: drop_target_subtext_hex
+							align: .center
+						}),
+				])
+		}
 
 		screen = ui2.screen(canvas_bg_hex, screen_children)
 	} else {
@@ -511,32 +580,32 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 	match e.code {
 		.left {
 			if app.core.prev_sibling() {
-				app.load_image(app.core.target_path)
+				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.right {
 			if app.core.next_sibling() {
-				app.load_image(app.core.target_path)
+				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.up {
 			if app.core.prev_secondary_step() {
-				app.load_image(app.core.target_path)
+				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.down {
 			if app.core.next_secondary_step() {
-				app.load_image(app.core.target_path)
+				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.page_up {
 			if app.core.prev_secondary_step() {
-				app.load_image(app.core.target_path)
+				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.page_down {
 			if app.core.next_secondary_step() {
-				app.load_image(app.core.target_path)
+				app.request_image(app.core.target_path, 'sibling')
 			}
 		}
 		.r {
@@ -618,6 +687,7 @@ fn main() {
 pub fn launch_viewer(image_path string) {
 	mut app := unsafe { global_viewer_app }
 	app.core = new_app()
+	app.image_pipeline = ImagePipeline{}
 	app.core.open_path(image_path)
 	if app.has_scanner_cancel {
 		app.scanner_cancel.close()
