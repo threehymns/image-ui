@@ -110,18 +110,18 @@ Recorded on 2026-09-25 from the #18 implementation on branch `t3code/15-transpar
 
 | Case | Cache | Median ms | p95 ms |
 | --- | --- | ---: | ---: |
-| Alpha image load | no app cache | 0.12 | 0.56 |
-| Opaque image load | no app cache | 0.52 | 0.54 |
-| 4K image load | no app cache | 417.35 | 521.47 |
-| 128-Sibling discovery | filesystem state uncontrolled | 1.33 | 1.77 |
-| Sibling navigation | no app cache | 0.28 | 0.39 |
-| Pattern tile creation | constant | 0.47 | 0.53 |
-| 4K frame preparation | pattern resource | 0.01 | 0.01 |
-| 4K screen construction, first selection | pattern resource | 0.32 | 0.41 |
+| Alpha image load | no app cache | 0.10 | 0.51 |
+| Opaque image load | no app cache | 0.30 | 0.48 |
+| 4K image load | no app cache | 529.47 | 804.27 |
+| 128-Sibling discovery | filesystem state uncontrolled | 1.51 | 2.48 |
+| Sibling navigation | no app cache | 0.29 | 0.43 |
+| Pattern tile creation | constant | 0.28 | 0.39 |
+| 4K frame preparation | pattern resource | 0.01 | 0.02 |
+| 4K screen construction, first selection | pattern resource | 0.49 | 0.52 |
 | Resize to 4K | pattern resource | 0.04 | 0.04 |
-| CPU startup path with 4K image, first selection | pattern resource | 686.63 | 845.88 |
-| 4K screen construction, second selection | pattern resource | 0.57 | 2.87 |
-| CPU startup path with 4K image, second selection | pattern resource | 304.40 | 691.52 |
+| CPU startup path with 4K image, first selection | pattern resource | 481.35 | 786.86 |
+| 4K screen construction, second selection | pattern resource | 0.39 | 0.48 |
+| CPU startup path with 4K image, second selection | pattern resource | 459.64 | 602.97 |
 
 All returned-value checks passed.
 
@@ -130,19 +130,19 @@ All returned-value checks passed.
 | Measurement | Cold process | Warm process |
 | --- | ---: | ---: |
 | Measured viewport | 3840x2094 | 3840x2094 |
-| Process launch to first content | 735.64 ms | 738.89 ms |
-| Process launch to harness first input | 1566.88 ms | 1505.34 ms |
-| Toggle to screen build | 0.13 ms | 0.10 ms |
-| Sibling switch to screen build | 0.10 ms | 1.47 ms |
-| Pan to screen build | 0.19 ms | 1.17 ms |
-| Zoom to screen build | 0.17 ms | 0.21 ms |
-| Resize request to measured-width screen build | 25.93 ms | 37.74 ms |
-| Frame callback median | 16.76 ms | 16.77 ms |
-| Frame callback p95 | 16.80 ms | 16.79 ms |
+| Process launch to first content | 1265.65 ms | 1251.70 ms |
+| Process launch to harness first input | 2346.38 ms | 2421.62 ms |
+| Toggle to screen build | 0.17 ms | 0.16 ms |
+| Sibling switch to screen build | 0.16 ms | 0.14 ms |
+| Pan to screen build | 0.14 ms | 0.18 ms |
+| Zoom to screen build | 0.25 ms | 0.18 ms |
+| Resize request to measured-width screen build | 33.97 ms | 52.87 ms |
+| Frame callback median | 16.75 ms | 16.75 ms |
+| Frame callback p95 | 17.00 ms | 18.31 ms |
 | Samples after warmup | 300 | 300 |
-| Trace checksum | `74828cb6d68e8cae` | `74828cb6d68e8cae` |
+| Trace checksum | `1e2c2b207cd66efd` | `1e2c2b207cd66efd` |
 
-The two process labels are separate launches, not cold and warm versions of a file-backed background resource. The measured 3840x2094 viewport is not 4K; no 4K viewport claim is made. Frame callback cadence does not include a post-present GPU fence.
+The two process labels are separate launches, not cold and warm versions of a file-backed background resource. The measured 3840x2094 viewport is not 4K, and the warm callback p95 exceeded 16.7 ms; no 4K or frame-time target claim is made. Frame callback cadence does not include a post-present GPU fence.
 
 ## Diagnostics versus repeatable results
 
