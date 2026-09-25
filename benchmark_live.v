@@ -64,6 +64,8 @@ pub mut:
 	frame_median_ns             i64 = -1
 	frame_p95_ns                i64 = -1
 	frame_samples               int
+	viewport_width              int
+	viewport_height             int
 	checksum                    u64
 	complete                    bool
 }
@@ -118,6 +120,8 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 				if resize_request_width > 0 && row.width != resize_request_width {
 					continue
 				}
+				summary.viewport_width = row.width
+				summary.viewport_height = row.height
 				summary.resize_to_frame_ns = if resize_request_us > 0 {
 					(row.at_us - resize_request_us) * 1000
 				} else {
@@ -131,6 +135,10 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 			}
 			'complete' {
 				summary.complete = true
+				if summary.viewport_width == 0 {
+					summary.viewport_width = row.width
+					summary.viewport_height = row.height
+				}
 			}
 			else {}
 		}

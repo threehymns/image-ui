@@ -60,11 +60,10 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 | `image_load_alpha`, `image_load_opaque`, `image_load_4k` | File read, `stbi` metadata decode, and decode free through the production `load_image_metadata` seam |
 | `sibling_discovery` | Spawn, complete directory enumeration, natural sort, channel batches, and final batch through the current scanner |
 | `sibling_navigation` | Playlist step plus the current synchronous metadata decode |
-| `frame_prepare_4k` | Zoom, pan, and 4K screen-element construction with a warm checkerboard resource |
-| `checkerboard_generate_4k` | Current full-window BMP encoding and file write after cache removal |
-| `checkerboard_lookup_4k` | Existing-file branch of the current checkerboard cache |
-| `screen_construct_4k` | Current UI2 element construction and checkerboard lookup or generation |
-| `screen_resize_to_4k` | Three screen builds needed to move from 1920x1080 to 3840x2160 under the current two-stable-frame resize workaround |
+| `frame_prepare_4k` | Zoom, pan, and 4K screen-element construction with one logical repeat tile |
+| `pattern_tile` | Creation of the 32x32 logical repeat tile containing 16 px cells |
+| `screen_construct_4k` | Current UI2 element construction and repeat-tile reuse |
+| `screen_resize_to_4k` | Three screen builds needed to move from 1920x1080 to 3840x2160 |
 | `startup_cpu` | `new_app`, 4K metadata decode, state setup, and 1024x768 screen construction; it is not process-launch time |
 
 `screen_construct_4k` and `frame_prepare_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements.
@@ -73,16 +72,15 @@ Every row includes warmup count, fixed iteration count, cache label, median, p95
 
 ## Cache controls
 
-`--cache cold`, `--cache warm`, and `--cache both` control the current exact-size checkerboard BMP file.
+`--cache cold`, `--cache warm`, and `--cache both` select which screen-construction cases are run. The transparency background is a logical repeat tile and has no file cache.
 
-- Cold removes the exact file before every measured sample. The timed operation regenerates and writes it.
-- Warm creates the file before timing. The timed operation takes the existing-file branch and does not regenerate pixels.
+- Pattern rows reuse the same 32x32 tile and do not allocate a window-sized raster.
 - Image decode has no application cache in the current Viewer. Its rows say `no-app-cache`; filesystem page-cache state is not claimed or forcibly controlled.
-- Live cold and warm runs control the same checkerboard resource. Fixture image bytes are shared by the two live processes, so the second run also has a warm filesystem cache.
+- Live cold and warm labels describe separate process runs; they do not control a checkerboard file.
 
 ## Live Wayland smoke
 
-Each live run starts the benchmark build with the 4K fixture, waits for the first content screen and complete directory scan, then asks niri to resize the focused tiled window. On the scale-2 baseline machine, a 1920 logical-pixel column gives UI2 a 3840x2094 physical-pixel framebuffer. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300.
+Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen and complete directory scan, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300.
 
 The harness sends real Wayland key input through `wtype` and verifies each action before the next run:
 
@@ -97,7 +95,7 @@ The cadence value is the interval between Viewer `build_screen` callbacks. UI2 d
 
 ## Recorded baseline
 
-Recorded on 2026-09-24 from the issue #16 working tree based on commit `091183922eb6`. Re-run the commands after committing to replace the source-state label with a clean commit hash.
+Recorded on 2026-09-25 from the #18 implementation on branch `t3code/15-transparency`. The benchmark output records the exact source commit used for each run.
 
 - OS: Linux 7.1.8-arch1-3, x86_64
 - CPU: Intel Core i7-8565U at 1.80 GHz, 8 logical CPUs
@@ -112,45 +110,45 @@ Recorded on 2026-09-24 from the issue #16 working tree based on commit `09118392
 
 | Case | Cache | Median ms | p95 ms |
 | --- | --- | ---: | ---: |
-| Alpha image load | no app cache | 0.08 | 0.37 |
-| Opaque image load | no app cache | 0.19 | 0.32 |
-| 4K image load | no app cache | 231.51 | 242.50 |
-| 128-Sibling discovery | filesystem state uncontrolled | 0.99 | 1.44 |
-| Sibling navigation | no app cache | 0.19 | 0.24 |
-| 4K frame preparation | warm checkerboard | 0.01 | 0.01 |
-| 4K checkerboard generation | cold app cache | 675.56 | 775.25 |
-| 4K screen construction | cold app cache | 661.15 | 783.61 |
-| Resize to 4K | cold app cache | 681.84 | 727.26 |
-| CPU startup path with 4K image | cold app cache | 277.82 | 287.46 |
-| 4K checkerboard lookup | warm app cache | 0.00 | 0.00 |
-| 4K screen construction | warm app cache | 0.00 | 0.01 |
-| CPU startup path with 4K image | warm app cache | 215.01 | 241.41 |
+| Alpha image load | no app cache | 0.10 | 0.51 |
+| Opaque image load | no app cache | 0.30 | 0.48 |
+| 4K image load | no app cache | 529.47 | 804.27 |
+| 128-Sibling discovery | filesystem state uncontrolled | 1.51 | 2.48 |
+| Sibling navigation | no app cache | 0.29 | 0.43 |
+| Pattern tile creation | constant | 0.28 | 0.39 |
+| 4K frame preparation | pattern resource | 0.01 | 0.02 |
+| 4K screen construction, first selection | pattern resource | 0.49 | 0.52 |
+| Resize to 4K | pattern resource | 0.04 | 0.04 |
+| CPU startup path with 4K image, first selection | pattern resource | 481.35 | 786.86 |
+| 4K screen construction, second selection | pattern resource | 0.39 | 0.48 |
+| CPU startup path with 4K image, second selection | pattern resource | 459.64 | 602.97 |
 
 All returned-value checks passed.
 
 ### Live Wayland baseline
 
-| Measurement | Cold checkerboard | Warm checkerboard |
+| Measurement | Cold process | Warm process |
 | --- | ---: | ---: |
-| Process launch to first content | 498.60 ms | 472.02 ms |
-| Process launch to harness first input | 2020.09 ms | 1829.76 ms |
-| Toggle to screen build | 0.10 ms | 0.10 ms |
-| Sibling switch to screen build | 1.43 ms | 3.26 ms |
-| Pan to screen build | 0.12 ms | 2.63 ms |
-| Zoom to screen build | 0.16 ms | 0.20 ms |
-| Resize request to 3840-pixel screen build | 633.64 ms | 295.14 ms |
-| Frame callback median | 16.77 ms | 16.77 ms |
-| Frame callback p95 | 16.90 ms | 16.88 ms |
+| Measured viewport | 3840x2094 | 3840x2094 |
+| Process launch to first content | 1265.65 ms | 1251.70 ms |
+| Process launch to harness first input | 2346.38 ms | 2421.62 ms |
+| Toggle to screen build | 0.17 ms | 0.16 ms |
+| Sibling switch to screen build | 0.16 ms | 0.14 ms |
+| Pan to screen build | 0.14 ms | 0.18 ms |
+| Zoom to screen build | 0.25 ms | 0.18 ms |
+| Resize request to measured-width screen build | 33.97 ms | 52.87 ms |
+| Frame callback median | 16.75 ms | 16.75 ms |
+| Frame callback p95 | 17.00 ms | 18.31 ms |
 | Samples after warmup | 300 | 300 |
-| Trace checksum | `299be1005ac7cc21` | `299be1005ac7cc21` |
+| Trace checksum | `1e2c2b207cd66efd` | `1e2c2b207cd66efd` |
 
-The warm run was not consistently faster for process launch. Treat that spread as run-to-run noise, not a cache regression or improvement. The cold resize difference is more consistent with the exact-size BMP work, but one local pair is not a stable threshold.
+The two process labels are separate launches, not cold and warm versions of a file-backed background resource. The measured 3840x2094 viewport is not 4K, and the warm callback p95 exceeded 16.7 ms; no 4K or frame-time target claim is made. Frame callback cadence does not include a post-present GPU fence.
 
 ## Diagnostics versus repeatable results
 
 The table above is the checked-in baseline. It uses fixed fixtures, fixed sample counts, explicit cache controls, checksums, and recorded build and hardware state.
 
-Earlier syscall tracing from issue #15 is diagnostic only. It recorded about 15 ms to Wayland connection, about 324 ms to a warm checkerboard resource access, and about 1.28 seconds to a cold full-window checkerboard write with a 1916x2094 window. Tracing changed scheduling and I/O cost, so those values are not benchmark samples and are not pass/fail gates.
+Earlier syscall tracing from issue #15 is diagnostic only and predates the repeat-tile path. It recorded about 15 ms to Wayland connection, about 324 ms to a warm full-window resource access, and about 1.28 seconds to a cold full-window write with a 1916x2094 window. Tracing changed scheduling and I/O cost, so those values are not benchmark samples and are not pass/fail gates.
 
 The following remain targets rather than guarantees:
 

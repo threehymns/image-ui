@@ -192,62 +192,54 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		cache: 'no-app-cache'
 	})
 	runner.add(BenchmarkOperation{
+		kind:  'pattern_tile'
+		cache: 'constant'
+	})
+	runner.add(BenchmarkOperation{
 		kind:   'frame_prepare_4k'
 		path:   fixtures.large_4k
 		width:  benchmark_large_width
 		height: benchmark_large_height
-		cache:  'warm-checkerboard'
+		cache:  'pattern-resource'
 	})
 
 	if config.cache == .cold || config.cache == .both {
-		runner.add(BenchmarkOperation{
-			kind:   'checkerboard_generate_4k'
-			width:  benchmark_large_width
-			height: benchmark_large_height
-			cache:  'cold-app-cache'
-		})
 		runner.add(BenchmarkOperation{
 			kind:   'screen_construct_4k'
 			path:   fixtures.opaque
 			width:  benchmark_large_width
 			height: benchmark_large_height
-			cache:  'cold-app-cache'
+			cache:  'pattern-resource'
 		})
 		runner.add(BenchmarkOperation{
 			kind:   'screen_resize_to_4k'
 			path:   fixtures.opaque
 			width:  benchmark_large_width
 			height: benchmark_large_height
-			cache:  'cold-app-cache'
+			cache:  'pattern-resource'
 		})
 		runner.add(BenchmarkOperation{
 			kind:   'startup_cpu'
 			path:   fixtures.large_4k
 			width:  1024
 			height: 768
-			cache:  'cold-app-cache'
+			cache:  'pattern-resource'
 		})
 	}
 	if config.cache == .warm || config.cache == .both {
-		runner.add(BenchmarkOperation{
-			kind:   'checkerboard_lookup_4k'
-			width:  benchmark_large_width
-			height: benchmark_large_height
-			cache:  'warm-app-cache'
-		})
 		runner.add(BenchmarkOperation{
 			kind:   'screen_construct_4k'
 			path:   fixtures.opaque
 			width:  benchmark_large_width
 			height: benchmark_large_height
-			cache:  'warm-app-cache'
+			cache:  'pattern-resource'
 		})
 		runner.add(BenchmarkOperation{
 			kind:   'startup_cpu'
 			path:   fixtures.large_4k
 			width:  1024
 			height: 768
-			cache:  'warm-app-cache'
+			cache:  'pattern-resource'
 		})
 	}
 
@@ -262,6 +254,7 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	println('config=warmup:${config.warmup} iterations:${config.iterations} cache:${benchmark_cache_name(config.cache)}')
 	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
 	println('cache_note=image rows have no application cache; filesystem cache state is uncontrolled')
+	println('pattern_note=the Viewer uses one 32x32 logical repeat tile; no full-window raster is generated')
 	println('measurement=screen rows build UI2 elements only and do not include GPU submission')
 	println('| case | fixture | cache | warmup | iterations | median ms | p95 ms | checksum | status |')
 	println('| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |')
@@ -272,7 +265,6 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		verified = verified && result.verified
 	}
 	if owned_root {
-		remove_benchmark_checkerboards()
 		os.rmdir_all(root) or {}
 	}
 	if !verified {
@@ -358,29 +350,17 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				checksum:   benchmark_checksum_u64(benchmark_checksum_u64(0, u64(metadata.width)), u64(metadata.height))
 			}
 		}
-		'checkerboard_generate_4k', 'checkerboard_lookup_4k' {
-			path := checkerboard_bmp_path(operation.width, operation.height)
-			if operation.kind == 'checkerboard_generate_4k' {
-				os.rm(path) or {}
-			} else if !os.exists(path) {
-				_ = build_checkerboard_layer(operation.width, operation.height)
-			}
+		'pattern_tile' {
 			mut stopwatch := time.new_stopwatch()
-			element := build_checkerboard_layer(operation.width, operation.height)
+			pattern := checkerboard_pattern()
 			elapsed := stopwatch.elapsed().nanoseconds()
 			return BenchmarkSample{
 				elapsed_ns: elapsed
-				checksum:   benchmark_checksum_text(benchmark_checksum_u64(0, u64(operation.width)), '${element.image_path}:${element.frame.width}:${element.frame.height}')
+				checksum:   benchmark_checksum(pattern.pixels)
 			}
 		}
 		'screen_construct_4k', 'screen_resize_to_4k', 'frame_prepare_4k', 'startup_cpu' {
 			if operation.kind == 'startup_cpu' {
-				path := checkerboard_bmp_path(operation.width, operation.height)
-				if operation.cache == 'cold-app-cache' {
-					os.rm(path) or {}
-				} else if !os.exists(path) {
-					_ = build_checkerboard_layer(operation.width, operation.height)
-				}
 				mut stopwatch := time.new_stopwatch()
 				mut app := new_app()
 				metadata := load_image_metadata(operation.path) or { panic(err) }
@@ -393,19 +373,10 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				checksum = benchmark_checksum_u64(checksum, u64(metadata.height))
 				return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
 			}
-			if operation.kind == 'screen_construct_4k' && operation.cache == 'cold-app-cache' {
-				os.rm(checkerboard_bmp_path(operation.width, operation.height)) or {}
-			} else if (operation.kind == 'screen_construct_4k'
-				|| operation.kind == 'frame_prepare_4k'
-				|| operation.kind == 'startup_cpu') && !os.exists(checkerboard_bmp_path(operation.width, operation.height)) {
-				_ = build_checkerboard_layer(operation.width, operation.height)
-			}
 			mut app := benchmark_screen_app(operation.path, operation.width, operation.height)
 			if operation.kind == 'screen_resize_to_4k' {
-				os.rm(checkerboard_bmp_path(1920, 1080)) or {}
-				os.rm(checkerboard_bmp_path(operation.width, operation.height)) or {}
 				_ = app.build_screen_at_size(1920, 1080)
-			} else if operation.kind != 'screen_construct_4k' || operation.cache == 'warm-app-cache' {
+			} else if operation.kind != 'screen_construct_4k' {
 				_ = app.build_screen_at_size(operation.width, operation.height)
 			}
 			mut stopwatch := time.new_stopwatch()
@@ -516,6 +487,7 @@ fn run_wayland_smoke(target string) ! {
 	println('hardware=${hardware.os_name} ${hardware.architecture} cpu=${hardware.cpu_model} logical_cpus=${hardware.logical_cpus} memory=${hardware.memory} gpu_driver=${hardware.gpu_driver}')
 	println('cache=${os.getenv('IMAGE_UI_BENCHMARK_CACHE')} target=${target}')
 	println('config=warmup_frames:${warmup_frames} frame_target:${frame_target} measured_frames:${summary.frame_samples}')
+	println('measured_viewport=${summary.viewport_width}x${summary.viewport_height}')
 	println('process_to_first_content_ms=${benchmark_ms(summary.process_to_first_content_ns)}')
 	println('process_to_first_input_ms=${benchmark_ms(summary.process_to_first_input_ns)}')
 	println('toggle_to_frame_ms=${benchmark_ms(summary.toggle_to_frame_ns)}')
@@ -541,12 +513,6 @@ fn benchmark_ms(value i64) string {
 	return '${f64(value) / 1_000_000.0:0.3}'
 }
 
-fn remove_benchmark_checkerboards() {
-	os.rm(checkerboard_bmp_path(1024, 768)) or {}
-	os.rm(checkerboard_bmp_path(1920, 1080)) or {}
-	os.rm(checkerboard_bmp_path(benchmark_large_width, benchmark_large_height)) or {}
-}
-
 fn print_benchmark(title string) {
 	println('# ${title}')
 }
@@ -556,8 +522,8 @@ fn print_benchmark_help() {
 	println('usage: make benchmark [BENCHMARK_ARGS="--warmup 2 --iterations 10 --cache both"]')
 	println('usage: ./image-ui-benchmark --prepare-fixtures <directory>')
 	println('usage: make benchmark-wayland')
-	println('headless measures checkerboard generation, image metadata decode, screen construction, resize, navigation, and frame preparation without opening a display')
-	println('live uses the niri Wayland smoke harness and records cold and warm checkerboard-cache runs')
+	println('headless measures image metadata decode, screen construction, resize, navigation, pattern-tile creation, and frame preparation without opening a display')
+	println('live uses the niri Wayland smoke harness and records the measured viewport without claiming 4K evidence')
 }
 
 fn fatal_benchmark_usage(message string) {
