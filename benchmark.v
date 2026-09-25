@@ -1,0 +1,567 @@
+module main
+
+import os
+import time
+
+pub enum BenchmarkCacheSelection {
+	cold
+	warm
+	both
+}
+
+pub struct BenchmarkConfig {
+pub mut:
+	warmup     int                     = 2
+	iterations int                     = 10
+	cache      BenchmarkCacheSelection = .both
+	fixtures   string
+}
+
+pub struct BenchmarkSample {
+pub:
+	elapsed_ns i64
+	checksum   u64
+}
+
+pub struct BenchmarkResult {
+pub:
+	name       string
+	fixture    string
+	cache      string
+	warmup     int
+	iterations int
+	median_ns  i64
+	p95_ns     i64
+	checksum   u64
+	verified   bool
+}
+
+struct BenchmarkOperation {
+pub mut:
+	kind   string
+	path   string
+	width  int
+	height int
+	cache  string
+}
+
+struct BenchmarkRunner {
+pub mut:
+	config  BenchmarkConfig
+	results []BenchmarkResult
+}
+
+pub fn benchmark_main() {
+	args := if os.args.len > 1 { os.args[1..] } else { []string{} }
+	if args.len == 0 {
+		run_headless_benchmark(BenchmarkConfig{}) or { panic(err) }
+		return
+	}
+	match args[0] {
+		'--help', '-h' {
+			print_benchmark_help()
+		}
+		'--prepare-fixtures' {
+			if args.len != 2 {
+				fatal_benchmark_usage('--prepare-fixtures requires one directory')
+			}
+			fixtures := generate_benchmark_fixtures(args[1], benchmark_sibling_count) or {
+				eprintln('fixture generation failed: ${err}')
+				exit(1)
+			}
+			print_benchmark('Viewer fixtures')
+			println('alpha=${fixtures.alpha}')
+			println('opaque=${fixtures.opaque}')
+			println('large_4k=${fixtures.large_4k}')
+			println('siblings=${fixtures.siblings}')
+			println('sibling_count=${fixtures.sibling_count}')
+		}
+		'--wayland-smoke' {
+			if args.len != 2 {
+				fatal_benchmark_usage('--wayland-smoke requires one target image')
+			}
+			run_wayland_smoke(args[1]) or {
+				eprintln('Wayland smoke failed: ${err}')
+				exit(1)
+			}
+		}
+		else {
+			config := parse_benchmark_config(args) or {
+				fatal_benchmark_usage(err.msg())
+				return
+			}
+			run_headless_benchmark(config) or {
+				eprintln('benchmark failed: ${err}')
+				exit(1)
+			}
+		}
+	}
+}
+
+fn parse_benchmark_config(args []string) !BenchmarkConfig {
+	mut config := BenchmarkConfig{}
+	mut index := 0
+	for index < args.len {
+		match args[index] {
+			'--warmup' {
+				index++
+				if index >= args.len {
+					return error('--warmup requires a positive integer')
+				}
+				config.warmup = args[index].int()
+			}
+			'--iterations' {
+				index++
+				if index >= args.len {
+					return error('--iterations requires a positive integer')
+				}
+				config.iterations = args[index].int()
+			}
+			'--cache' {
+				index++
+				if index >= args.len {
+					return error('--cache requires cold, warm, or both')
+				}
+				config.cache = match args[index] {
+					'cold' { BenchmarkCacheSelection.cold }
+					'warm' { BenchmarkCacheSelection.warm }
+					'both' { BenchmarkCacheSelection.both }
+					else { return error('--cache requires cold, warm, or both') }
+				}
+			}
+			'--fixtures' {
+				index++
+				if index >= args.len {
+					return error('--fixtures requires a directory')
+				}
+				config.fixtures = args[index]
+			}
+			else {
+				return error('unknown option: ${args[index]}')
+			}
+		}
+		index++
+	}
+	if config.warmup < 0 {
+		return error('warmup cannot be negative')
+	}
+	if config.iterations < 2 {
+		return error('iterations must be at least 2 for p95 reporting')
+	}
+	return config
+}
+
+fn run_headless_benchmark(config BenchmarkConfig) ! {
+	owned_root := config.fixtures == ''
+	root := if owned_root {
+		os.join_path(os.temp_dir(), 'image-ui-benchmark-${os.getpid()}')
+	} else {
+		config.fixtures
+	}
+	fixture_started := time.new_stopwatch()
+	fixtures := generate_benchmark_fixtures(root, benchmark_sibling_count) or { return err }
+	fixture_elapsed := fixture_started.elapsed().nanoseconds()
+
+	mut runner := BenchmarkRunner{
+		config:  config
+		results: []
+	}
+	runner.add(BenchmarkOperation{
+		kind:  'image_load_alpha'
+		path:  fixtures.alpha
+		cache: 'no-app-cache'
+	})
+	runner.add(BenchmarkOperation{
+		kind:  'image_load_opaque'
+		path:  fixtures.opaque
+		cache: 'no-app-cache'
+	})
+	runner.add(BenchmarkOperation{
+		kind:  'image_load_4k'
+		path:  fixtures.large_4k
+		cache: 'no-app-cache'
+	})
+	runner.add(BenchmarkOperation{
+		kind:  'sibling_discovery'
+		path:  fixtures.sibling(0)
+		cache: 'filesystem'
+	})
+	runner.add(BenchmarkOperation{
+		kind:  'sibling_navigation'
+		path:  fixtures.sibling(64)
+		cache: 'no-app-cache'
+	})
+	runner.add(BenchmarkOperation{
+		kind:   'frame_prepare_4k'
+		path:   fixtures.large_4k
+		width:  benchmark_large_width
+		height: benchmark_large_height
+		cache:  'warm-checkerboard'
+	})
+
+	if config.cache == .cold || config.cache == .both {
+		runner.add(BenchmarkOperation{
+			kind:   'checkerboard_generate_4k'
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'cold-app-cache'
+		})
+		runner.add(BenchmarkOperation{
+			kind:   'screen_construct_4k'
+			path:   fixtures.opaque
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'cold-app-cache'
+		})
+		runner.add(BenchmarkOperation{
+			kind:   'screen_resize_to_4k'
+			path:   fixtures.opaque
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'cold-app-cache'
+		})
+		runner.add(BenchmarkOperation{
+			kind:   'startup_cpu'
+			path:   fixtures.large_4k
+			width:  1024
+			height: 768
+			cache:  'cold-app-cache'
+		})
+	}
+	if config.cache == .warm || config.cache == .both {
+		runner.add(BenchmarkOperation{
+			kind:   'checkerboard_lookup_4k'
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'warm-app-cache'
+		})
+		runner.add(BenchmarkOperation{
+			kind:   'screen_construct_4k'
+			path:   fixtures.opaque
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'warm-app-cache'
+		})
+		runner.add(BenchmarkOperation{
+			kind:   'startup_cpu'
+			path:   fixtures.large_4k
+			width:  1024
+			height: 768
+			cache:  'warm-app-cache'
+		})
+	}
+
+	print_benchmark('Viewer headless benchmark')
+	build := benchmark_build_info()
+	hardware := benchmark_hardware_info()
+	println('build_commit=${build.commit} build_state=${build.dirty} module=${build.module}')
+	println('v=${build.v_version}')
+	println('compiler=${build.compiler}')
+	println('compile_flags=${build.compile_flag}')
+	println('hardware=${hardware.os_name} ${hardware.architecture} cpu=${hardware.cpu_model} logical_cpus=${hardware.logical_cpus} memory=${hardware.memory} gpu_driver=${hardware.gpu_driver}')
+	println('config=warmup:${config.warmup} iterations:${config.iterations} cache:${benchmark_cache_name(config.cache)}')
+	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
+	println('cache_note=image rows have no application cache; filesystem cache state is uncontrolled')
+	println('measurement=screen rows build UI2 elements only and do not include GPU submission')
+	println('| case | fixture | cache | warmup | iterations | median ms | p95 ms | checksum | status |')
+	println('| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |')
+	mut verified := true
+	for result in runner.results {
+		status := if result.verified { 'ok' } else { 'checksum-mismatch' }
+		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.checksum.hex()} | ${status} |')
+		verified = verified && result.verified
+	}
+	if owned_root {
+		remove_benchmark_checkerboards()
+		os.rmdir_all(root) or {}
+	}
+	if !verified {
+		return error('one or more returned-value checks failed')
+	}
+}
+
+fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
+	for _ in 0 .. runner.config.warmup {
+		_ := execute_benchmark_operation(operation, 0)
+	}
+	mut samples := []i64{}
+	mut expected := u64(0)
+	mut verified := true
+	for iteration in 0 .. runner.config.iterations {
+		sample := execute_benchmark_operation(operation, iteration)
+		if iteration == 0 {
+			expected = sample.checksum
+		} else if sample.checksum != expected {
+			verified = false
+		}
+		samples << sample.elapsed_ns
+	}
+	stats := summarize_samples(samples)
+	fixture := if operation.path == '' {
+		'generated:${operation.width}x${operation.height}'
+	} else {
+		operation.path
+	}
+	runner.results << BenchmarkResult{
+		name:       operation.kind
+		fixture:    fixture
+		cache:      operation.cache
+		warmup:     runner.config.warmup
+		iterations: runner.config.iterations
+		median_ns:  stats.median_ns
+		p95_ns:     stats.p95_ns
+		checksum:   expected
+		verified:   verified
+	}
+}
+
+fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) BenchmarkSample {
+	match operation.kind {
+		'image_load_alpha', 'image_load_opaque', 'image_load_4k' {
+			mut stopwatch := time.new_stopwatch()
+			metadata := load_image_metadata(operation.path) or { panic(err) }
+			elapsed := stopwatch.elapsed().nanoseconds()
+			mut checksum := u64(0)
+			checksum = benchmark_checksum_u64(checksum, u64(metadata.width))
+			checksum = benchmark_checksum_u64(checksum, u64(metadata.height))
+			checksum = benchmark_checksum_u64(checksum, u64(metadata.source_bytes))
+			checksum = benchmark_checksum_u64(checksum, u64(metadata.original_channels))
+			return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
+		}
+		'sibling_discovery' {
+			ch := chan SiblingBatch{cap: 8}
+			mut stopwatch := time.new_stopwatch()
+			spawn scan_directory_siblings(os.dir(operation.path), operation.path, ch)
+			mut count := 0
+			mut complete := false
+			for !complete {
+				batch := <-ch
+				count += batch.items.len
+				complete = batch.is_last
+			}
+			elapsed := stopwatch.elapsed().nanoseconds()
+			return BenchmarkSample{ elapsed_ns: elapsed, checksum: benchmark_checksum_u64(0, u64(count)) }
+		}
+		'sibling_navigation' {
+			mut app := benchmark_navigation_app(os.dir(operation.path))
+			mut stopwatch := time.new_stopwatch()
+			if iteration % 2 == 0 {
+				app.core.next_sibling()
+			} else {
+				app.core.prev_sibling()
+			}
+			metadata := load_image_metadata(app.core.target_path) or { panic(err) }
+			elapsed := stopwatch.elapsed().nanoseconds()
+			app.core.set_image_loaded(app.core.target_path, metadata.width, metadata.height)
+			return BenchmarkSample{
+				elapsed_ns: elapsed
+				checksum:   benchmark_checksum_u64(benchmark_checksum_u64(0, u64(metadata.width)), u64(metadata.height))
+			}
+		}
+		'checkerboard_generate_4k', 'checkerboard_lookup_4k' {
+			path := checkerboard_bmp_path(operation.width, operation.height)
+			if operation.kind == 'checkerboard_generate_4k' {
+				os.rm(path) or {}
+			} else if !os.exists(path) {
+				_ = build_checkerboard_layer(operation.width, operation.height)
+			}
+			mut stopwatch := time.new_stopwatch()
+			element := build_checkerboard_layer(operation.width, operation.height)
+			elapsed := stopwatch.elapsed().nanoseconds()
+			return BenchmarkSample{
+				elapsed_ns: elapsed
+				checksum:   benchmark_checksum_text(benchmark_checksum_u64(0, u64(operation.width)), '${element.image_path}:${element.frame.width}:${element.frame.height}')
+			}
+		}
+		'screen_construct_4k', 'screen_resize_to_4k', 'frame_prepare_4k', 'startup_cpu' {
+			if operation.kind == 'startup_cpu' {
+				path := checkerboard_bmp_path(operation.width, operation.height)
+				if operation.cache == 'cold-app-cache' {
+					os.rm(path) or {}
+				} else if !os.exists(path) {
+					_ = build_checkerboard_layer(operation.width, operation.height)
+				}
+				mut stopwatch := time.new_stopwatch()
+				mut app := new_app()
+				metadata := load_image_metadata(operation.path) or { panic(err) }
+				app.set_image_loaded(operation.path, metadata.width, metadata.height)
+				app.set_canvas_size(operation.width, operation.height)
+				screen := benchmark_viewer_for_app(mut app, operation.width, operation.height).build_screen_at_size(operation.width, operation.height)
+				elapsed := stopwatch.elapsed().nanoseconds()
+				mut checksum := benchmark_checksum_text(0, '${screen.id}:${screen.children}')
+				checksum = benchmark_checksum_u64(checksum, u64(metadata.width))
+				checksum = benchmark_checksum_u64(checksum, u64(metadata.height))
+				return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
+			}
+			if operation.kind == 'screen_construct_4k' && operation.cache == 'cold-app-cache' {
+				os.rm(checkerboard_bmp_path(operation.width, operation.height)) or {}
+			} else if (operation.kind == 'screen_construct_4k'
+				|| operation.kind == 'frame_prepare_4k'
+				|| operation.kind == 'startup_cpu') && !os.exists(checkerboard_bmp_path(operation.width, operation.height)) {
+				_ = build_checkerboard_layer(operation.width, operation.height)
+			}
+			mut app := benchmark_screen_app(operation.path, operation.width, operation.height)
+			if operation.kind == 'screen_resize_to_4k' {
+				os.rm(checkerboard_bmp_path(1920, 1080)) or {}
+				os.rm(checkerboard_bmp_path(operation.width, operation.height)) or {}
+				_ = app.build_screen_at_size(1920, 1080)
+			} else if operation.kind != 'screen_construct_4k' || operation.cache == 'warm-app-cache' {
+				_ = app.build_screen_at_size(operation.width, operation.height)
+			}
+			mut stopwatch := time.new_stopwatch()
+			if operation.kind == 'screen_resize_to_4k' {
+				first := app.build_screen_at_size(operation.width, operation.height)
+				second := app.build_screen_at_size(operation.width, operation.height)
+				third := app.build_screen_at_size(operation.width, operation.height)
+				elapsed := stopwatch.elapsed().nanoseconds()
+				return BenchmarkSample{
+					elapsed_ns: elapsed
+					checksum:   benchmark_checksum_text(0, '${first.id}:${first.children}:${second.id}:${second.children}:${third.id}:${third.children}')
+				}
+			}
+			if operation.kind == 'frame_prepare_4k' {
+				app.core.zoom_in()
+				app.core.pan(1.0, 1.0)
+			}
+			screen := app.build_screen_at_size(operation.width, operation.height)
+			elapsed := stopwatch.elapsed().nanoseconds()
+			mut checksum := benchmark_checksum_text(0, '${screen.id}:${screen.children}')
+			if operation.kind == 'frame_prepare_4k' {
+				checksum = benchmark_checksum_u64(checksum, u64(app.core.viewport.x * 1000.0))
+				checksum = benchmark_checksum_u64(checksum, u64(app.core.viewport.y * 1000.0))
+			}
+			return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
+		}
+		else {
+			panic('unknown benchmark operation: ${operation.kind}')
+		}
+	}
+}
+
+fn benchmark_navigation_app(directory string) &ViewerApp {
+	mut app := &ViewerApp{
+		core: new_app()
+	}
+	app.core.playlist = benchmark_sibling_paths(directory)
+	app.core.active_index = 64
+	app.core.set_image_loaded(app.core.active_sibling_path(), 96, 64)
+	app.core.set_canvas_size(1024, 768)
+	return app
+}
+
+fn benchmark_sibling_paths(directory string) []string {
+	mut paths := []string{}
+	for entry in os.ls(directory) or { []string{} } {
+		path := os.join_path(directory, entry)
+		if is_image_file(path) {
+			paths << path
+		}
+	}
+	natural_sort(mut paths)
+	return paths
+}
+
+fn benchmark_screen_app(path string, width int, height int) &ViewerApp {
+	mut app := &ViewerApp{
+		core:               new_app()
+		window_ready:       true
+		requested_window_w: width
+		requested_window_h: height
+	}
+	image_width := if width == benchmark_large_width { benchmark_large_width } else { 96 }
+	image_height := if height == benchmark_large_height { benchmark_large_height } else { 64 }
+	app.core.set_image_loaded(path, image_width, image_height)
+	return app
+}
+
+fn benchmark_viewer_for_app(mut app App, width int, height int) &ViewerApp {
+	return &ViewerApp{
+		core:               app
+		window_ready:       true
+		requested_window_w: width
+		requested_window_h: height
+	}
+}
+
+fn run_wayland_smoke(target string) ! {
+	if os.getenv('WAYLAND_DISPLAY') == '' {
+		return error('WAYLAND_DISPLAY is unset')
+	}
+	trace_path := os.getenv('IMAGE_UI_BENCHMARK_TRACE')
+	if trace_path == '' {
+		return error('IMAGE_UI_BENCHMARK_TRACE is required')
+	}
+	warmup_frames := os.getenv('IMAGE_UI_BENCHMARK_WARMUP_FRAMES').int()
+	frame_target := os.getenv('IMAGE_UI_BENCHMARK_FRAME_TARGET').int()
+	launch_viewer(target)
+	summary := summarize_live_trace(trace_path, warmup_frames, frame_target) or { return err }
+	if !summary.complete {
+		return error('live trace did not complete')
+	}
+	if summary.process_to_first_content_ns < 0 || summary.process_to_first_input_ns < 0 {
+		return error('live trace lacks process-to-content or process-to-input marks')
+	}
+	if summary.toggle_to_frame_ns < 0 || summary.switch_to_frame_ns < 0 || summary.pan_to_frame_ns < 0 || summary.zoom_to_frame_ns < 0 {
+		return error('live trace lacks one or more action-to-frame marks')
+	}
+	if summary.resize_to_frame_ns < 0 || summary.frame_samples == 0 {
+		return error('live trace lacks resize or frame cadence samples')
+	}
+	build := benchmark_build_info()
+	hardware := benchmark_hardware_info()
+	print_benchmark('Viewer live Wayland smoke')
+	println('build_commit=${build.commit} build_state=${build.dirty} module=${build.module}')
+	println('v=${build.v_version}')
+	println('compile_flags=${build.compile_flag}')
+	println('hardware=${hardware.os_name} ${hardware.architecture} cpu=${hardware.cpu_model} logical_cpus=${hardware.logical_cpus} memory=${hardware.memory} gpu_driver=${hardware.gpu_driver}')
+	println('cache=${os.getenv('IMAGE_UI_BENCHMARK_CACHE')} target=${target}')
+	println('config=warmup_frames:${warmup_frames} frame_target:${frame_target} measured_frames:${summary.frame_samples}')
+	println('process_to_first_content_ms=${benchmark_ms(summary.process_to_first_content_ns)}')
+	println('process_to_first_input_ms=${benchmark_ms(summary.process_to_first_input_ns)}')
+	println('toggle_to_frame_ms=${benchmark_ms(summary.toggle_to_frame_ns)}')
+	println('switch_to_frame_ms=${benchmark_ms(summary.switch_to_frame_ns)}')
+	println('pan_to_frame_ms=${benchmark_ms(summary.pan_to_frame_ns)}')
+	println('zoom_to_frame_ms=${benchmark_ms(summary.zoom_to_frame_ns)}')
+	println('resize_to_frame_ms=${benchmark_ms(summary.resize_to_frame_ns)}')
+	println('frame_callback_median_ms=${benchmark_ms(summary.frame_median_ns)}')
+	println('frame_callback_p95_ms=${benchmark_ms(summary.frame_p95_ns)}')
+	println('checksum=${summary.checksum.hex()} status=ok')
+	println('measurement_note=frame values are Viewer build-callback cadence; no post-present GPU fence is exposed')
+}
+
+fn benchmark_cache_name(cache BenchmarkCacheSelection) string {
+	return match cache {
+		.cold { 'cold' }
+		.warm { 'warm' }
+		.both { 'both' }
+	}
+}
+
+fn benchmark_ms(value i64) string {
+	return '${f64(value) / 1_000_000.0:0.3}'
+}
+
+fn remove_benchmark_checkerboards() {
+	os.rm(checkerboard_bmp_path(1024, 768)) or {}
+	os.rm(checkerboard_bmp_path(1920, 1080)) or {}
+	os.rm(checkerboard_bmp_path(benchmark_large_width, benchmark_large_height)) or {}
+}
+
+fn print_benchmark(title string) {
+	println('# ${title}')
+}
+
+fn print_benchmark_help() {
+	print_benchmark('Viewer benchmark')
+	println('usage: make benchmark [BENCHMARK_ARGS="--warmup 2 --iterations 10 --cache both"]')
+	println('usage: ./image-ui-benchmark --prepare-fixtures <directory>')
+	println('usage: make benchmark-wayland')
+	println('headless measures checkerboard generation, image metadata decode, screen construction, resize, navigation, and frame preparation without opening a display')
+	println('live uses the niri Wayland smoke harness and records cold and warm checkerboard-cache runs')
+}
+
+fn fatal_benchmark_usage(message string) {
+	eprintln('benchmark usage error: ${message}')
+	print_benchmark_help()
+	exit(2)
+}

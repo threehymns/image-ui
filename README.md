@@ -4,7 +4,7 @@ A fast, lightweight desktop image viewer system application built with [V](https
 
 ## Features
 
-- **Blazing Fast**: Sub-10ms startup (zero-TTI), immediate display of target images.
+- **Measured Performance**: Checked-in headless and live Wayland benchmarks with deterministic fixtures, cache controls, median/p95 output, and checksum gates. Sub-10ms startup and 60 FPS at 4K remain targets.
 - **Hardware-Accelerated Canvas**: Direct Sokol/`gg` rendering pipeline with continuous cursor-anchored zoom, sub-pixel pan, 90-degree step rotation, and flip.
 - **Prioritized Neighborhood Sibling Scan**: Immediate adjacent ±50 files streamed over worker channel for instant arrow navigation, with non-blocking background folder discovery.
 - **Collapsible Filmstrip**: Bounded LRU-cached preview thumbnails (max 100 textures, ~20MB VRAM).
@@ -55,6 +55,23 @@ Or using the V compiler directly:
 ```bash
 make test
 ```
+
+### Running Benchmarks
+The CPU and screen-construction suite needs no display server:
+```bash
+make benchmark
+```
+
+The live niri/Wayland smoke records cold and warm checkerboard-cache runs, process launch, first content, real key input, resize, Sibling switching, pan, zoom, and Viewer frame-callback cadence:
+```bash
+make benchmark-wayland
+```
+
+Use `--warmup`, `--iterations`, and `--cache` through `BENCHMARK_ARGS` to control sampling. CI only compiles the benchmark; it has no noisy wall-clock gates. See the [benchmark methodology and recorded baseline](./docs/benchmarks.md).
+
+## Performance claims
+
+The checked-in measurements describe the current path. The current 4K image metadata decode, full-window checkerboard generation, and synchronous Sibling decode are measured costs, not guarantees. Sub-10ms complete startup, 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom remain targets. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence.
 
 ## Forks & upstream
 

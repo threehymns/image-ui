@@ -5,7 +5,6 @@ import math
 import time
 import ui2
 import gg
-import stbi
 
 // Background for the canvas area outside the image
 pub const canvas_bg_hex = u32(0x141416)
@@ -19,23 +18,24 @@ pub const error_text_hex = u32(0xdc5a5a)
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	core            App
-	window_ready    bool
-	is_dragging     bool
-	drag_prev_x     f64
-	drag_prev_y     f64
-	last_click_time i64
-	last_click_x    f64
-	last_click_y    f64
-	scanned_dir          string
-	scanner_ch           chan SiblingBatch
-	has_scanner_ch       bool
-	requested_window_w   int
-	requested_window_h   int
-	checkerboard_key          string
-	checkerboard_pending_key  string
+	core                       App
+	window_ready               bool
+	is_dragging                bool
+	drag_prev_x                f64
+	drag_prev_y                f64
+	last_click_time            i64
+	last_click_x               f64
+	last_click_y               f64
+	scanned_dir                string
+	scanner_ch                 chan SiblingBatch
+	has_scanner_ch             bool
+	requested_window_w         int
+	requested_window_h         int
+	checkerboard_key           string
+	checkerboard_pending_key   string
 	checkerboard_stable_frames int
-	checkerboard_layer        ui2.Element
+	checkerboard_layer         ui2.Element
+	benchmark_live             BenchmarkLiveTrace
 }
 
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
@@ -113,22 +113,13 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		dir_path = os.dir(path)
 	}
 
-	img_bytes := os.read_bytes(img_path) or {
-		app.core.set_error(img_path, 'Unable to read image: ${err.msg()}')
+	metadata := load_image_metadata(img_path) or {
+		app.core.set_error(img_path, err.msg())
 		app.update_window_title()
 		return
 	}
 
-	stbi_img := stbi.load_from_memory(img_bytes.data, img_bytes.len, stbi.LoadParams{}) or {
-		app.core.set_error(img_path, 'Unable to load image: ${err.msg()}')
-		app.update_window_title()
-		return
-	}
-	img_w := stbi_img.width
-	img_h := stbi_img.height
-	stbi_img.free()
-
-	app.core.set_image_loaded(img_path, img_w, img_h)
+	app.core.set_image_loaded(img_path, metadata.width, metadata.height)
 
 	// If scanning a new directory, spawn background worker channel
 	clean_dir := os.real_path(dir_path)
@@ -195,10 +186,18 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 	}
 	win_w := int(bounds.width)
 	win_h := int(bounds.height)
+	return app.build_screen_at_size(win_w, win_h)
+}
+
+pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Element {
+	$if viewer_benchmark ? {
+		app.benchmark_live.begin_frame(win_w, win_h)
+	}
 	if win_w > 0 && win_h > 0 {
 		app.core.set_canvas_size(win_w, win_h)
 	}
 
+	mut screen := ui2.Element{}
 	if app.core.has_image {
 		img_rect, _, _, _ := get_draw_image_params(
 			app.core.viewport,
@@ -243,49 +242,85 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 			screen_children << app.get_checkerboard_layer(win_w, win_h)
 			screen_children << checkerboard_mask_elements(app.core.viewport, win_w, win_h)
 		}
-		screen_children << ui2.draggable_view_with_cursor('canvas_bg', bounds,
+		screen_children << ui2.draggable_view_with_cursor('canvas_bg',
+			ui2.rect(0, 0, f64(win_w), f64(win_h)),
 			ui2.BoxStyle{ transparent: true }, 'pointing_hand', [img_el])
 
-		return ui2.screen(canvas_bg_hex, screen_children)
-	}
-
-	// Empty drop target
-	target_w := f64(if win_w - 120 < 420 { math.max(120, win_w - 60) } else { 420 })
-	target_h := f64(if win_h - 120 < 260 { math.max(80, win_h - 60) } else { 260 })
-	target_x := (f64(win_w) - target_w) / 2.0
-	target_y := (f64(win_h) - target_h) / 2.0
-
-	mut target_children := []ui2.Element{}
-
-	if app.core.error_msg != '' {
-		target_children << ui2.label(
-			'err_label',
-			app.core.error_msg,
-			ui2.rect(0, target_h / 2.0 - 24, target_w, 24),
-			ui2.TextStyle{
-				size:  14
-				color: error_text_hex
-				align: .center
-			},
-		)
-		target_children << ui2.label(
-			'err_sublabel',
-			'Drop another image or open via CLI',
-			ui2.rect(0, target_h / 2.0 + 8, target_w, 20),
-			ui2.TextStyle{
-				size:  13
-				color: drop_target_subtext_hex
-				align: .center
-			},
-		)
+		screen = ui2.screen(canvas_bg_hex, screen_children)
 	} else {
-		// Subtle geometric icon in the center
-		icon_sz := 36.0
-		icon_x := (target_w - icon_sz) / 2.0
-		icon_y := target_h / 2.0 - 48.0
-		target_children << ui2.view(
-			'icon_box',
-			ui2.rect(icon_x, icon_y, icon_sz, icon_sz * 0.75),
+		// Empty drop target
+		target_w := f64(if win_w - 120 < 420 { math.max(120, win_w - 60) } else { 420 })
+		target_h := f64(if win_h - 120 < 260 { math.max(80, win_h - 60) } else { 260 })
+		target_x := (f64(win_w) - target_w) / 2.0
+		target_y := (f64(win_h) - target_h) / 2.0
+
+		mut target_children := []ui2.Element{}
+
+		if app.core.error_msg != '' {
+			target_children << ui2.label(
+				'err_label',
+				app.core.error_msg,
+				ui2.rect(0, target_h / 2.0 - 24, target_w, 24),
+				ui2.TextStyle{
+					size:  14
+					color: error_text_hex
+					align: .center
+				},
+			)
+			target_children << ui2.label(
+				'err_sublabel',
+				'Drop another image or open via CLI',
+				ui2.rect(0, target_h / 2.0 + 8, target_w, 20),
+				ui2.TextStyle{
+					size:  13
+					color: drop_target_subtext_hex
+					align: .center
+				},
+			)
+		} else {
+			// Subtle geometric icon in the center
+			icon_sz := 36.0
+			icon_x := (target_w - icon_sz) / 2.0
+			icon_y := target_h / 2.0 - 48.0
+			target_children << ui2.view(
+				'icon_box',
+				ui2.rect(icon_x, icon_y, icon_sz, icon_sz * 0.75),
+				ui2.BoxStyle{
+					border_color:  drop_target_border_hex
+					border_left:   1
+					border_top:    1
+					border_right:  1
+					border_bottom: 1
+					transparent:   true
+					radius:        2
+				},
+				[],
+			)
+			target_children << ui2.label(
+				'prompt_label',
+				'Drop image here to view',
+				ui2.rect(0, target_h / 2.0 + 4, target_w, 24),
+				ui2.TextStyle{
+					size:  15
+					color: drop_target_text_hex
+					align: .center
+				},
+			)
+			target_children << ui2.label(
+				'subprompt_label',
+				'or run: image-ui <path>',
+				ui2.rect(0, target_h / 2.0 + 30, target_w, 20),
+				ui2.TextStyle{
+					size:  13
+					color: drop_target_subtext_hex
+					align: .center
+				},
+			)
+		}
+
+		frame_box := ui2.view(
+			'target_frame',
+			ui2.rect(target_x, target_y, target_w, target_h),
 			ui2.BoxStyle{
 				border_color:  drop_target_border_hex
 				border_left:   1
@@ -293,48 +328,17 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 				border_right:  1
 				border_bottom: 1
 				transparent:   true
-				radius:        2
+				radius:        6
 			},
-			[],
+			target_children,
 		)
-		target_children << ui2.label(
-			'prompt_label',
-			'Drop image here to view',
-			ui2.rect(0, target_h / 2.0 + 4, target_w, 24),
-			ui2.TextStyle{
-				size:  15
-				color: drop_target_text_hex
-				align: .center
-			},
-		)
-		target_children << ui2.label(
-			'subprompt_label',
-			'or run: image-ui <path>',
-			ui2.rect(0, target_h / 2.0 + 30, target_w, 20),
-			ui2.TextStyle{
-				size:  13
-				color: drop_target_subtext_hex
-				align: .center
-			},
-		)
+
+		screen = ui2.screen(canvas_bg_hex, [frame_box])
 	}
-
-	frame_box := ui2.view(
-		'target_frame',
-		ui2.rect(target_x, target_y, target_w, target_h),
-		ui2.BoxStyle{
-			border_color:  drop_target_border_hex
-			border_left:   1
-			border_top:    1
-			border_right:  1
-			border_bottom: 1
-			transparent:   true
-			radius:        6
-		},
-		target_children,
-	)
-
-	return ui2.screen(canvas_bg_hex, [frame_box])
+	$if viewer_benchmark ? {
+		app.benchmark_live.end_frame(app.core.active_sibling_path(), app.core.scan_complete)
+	}
+	return screen
 }
 
 fn parse_pointer_event(event string) ?(string, string, f64, f64) {
@@ -378,6 +382,9 @@ pub fn (mut app ViewerApp) handle_event(event string) {
 	if event.starts_with('scroll:') {
 		x, y, delta := parse_scroll_event(event) or { return }
 		app.handle_scroll(x, y, delta)
+		$if viewer_benchmark ? {
+			app.benchmark_live.on_pointer('zoom')
+		}
 		return
 	}
 	phase, id, x, y := parse_pointer_event(event) or { return }
@@ -416,6 +423,11 @@ pub fn (mut app ViewerApp) handle_event(event string) {
 			app.last_click_y = y
 		}
 	}
+	$if viewer_benchmark ? {
+		if phase == 'drag' {
+			app.benchmark_live.on_pointer('pan')
+		}
+	}
 }
 
 pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
@@ -423,6 +435,15 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 		return
 	}
 	app.poll_scanner()
+	$if viewer_benchmark ? {
+		if app.benchmark_live.enabled {
+			if e.code == .p {
+				app.core.pan(24.0, 24.0)
+			} else if e.code == .z {
+				app.core.zoom_in()
+			}
+		}
+	}
 
 	match e.code {
 		.left {
@@ -485,6 +506,9 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 		}
 		else {}
 	}
+	$if viewer_benchmark ? {
+		app.benchmark_live.on_key(e.code)
+	}
 }
 
 pub fn (mut app ViewerApp) handle_drop(e ui2.DropEvent) {
@@ -516,9 +540,13 @@ fn handle_viewer_drop(e ui2.DropEvent) {
 }
 
 fn main() {
-	mut cmd := build_cli_command()
-	cmd.setup()
-	cmd.parse(os.args)
+	$if viewer_benchmark ? {
+		benchmark_main()
+	} $else {
+		mut cmd := build_cli_command()
+		cmd.setup()
+		cmd.parse(os.args)
+	}
 }
 
 // launch_viewer boots the desktop viewer for the given image path.
@@ -529,6 +557,9 @@ pub fn launch_viewer(image_path string) {
 	app.core.target_path = image_path
 	app.requested_window_w = 1024
 	app.requested_window_h = 768
+	$if viewer_benchmark ? {
+		app.benchmark_live = new_benchmark_live_trace()
+	}
 
 	ui2.on_key_event(handle_viewer_key)
 	ui2.on_drop(handle_viewer_drop)
