@@ -1,19 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trace_wait_attempts=${IMAGE_UI_BENCHMARK_TRACE_WAIT_ATTEMPTS:-400}
+trace_wait_delay=${IMAGE_UI_BENCHMARK_TRACE_WAIT_DELAY:-0.025}
+window_wait_attempts=${IMAGE_UI_BENCHMARK_WINDOW_WAIT_ATTEMPTS:-400}
+window_wait_delay=${IMAGE_UI_BENCHMARK_WINDOW_WAIT_DELAY:-0.025}
+
+validate_wait_attempts() {
+	local name=$1
+	local value=$2
+	if [[ ! $value =~ ^[1-9][0-9]*$ ]]; then
+		printf 'Wayland smoke failed: %s must be a positive integer (got %s)\n' "$name" "$value" >&2
+		return 1
+	fi
+}
+
+validate_wait_delay() {
+	local name=$1
+	local value=$2
+	if [[ ! $value =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+		printf 'Wayland smoke failed: %s must be seconds (got %s)\n' "$name" "$value" >&2
+		return 1
+	fi
+}
+
+validate_wait_attempts IMAGE_UI_BENCHMARK_TRACE_WAIT_ATTEMPTS "$trace_wait_attempts"
+validate_wait_attempts IMAGE_UI_BENCHMARK_WINDOW_WAIT_ATTEMPTS "$window_wait_attempts"
+validate_wait_delay IMAGE_UI_BENCHMARK_TRACE_WAIT_DELAY "$trace_wait_delay"
+validate_wait_delay IMAGE_UI_BENCHMARK_WINDOW_WAIT_DELAY "$window_wait_delay"
+trace_wait_timeout="${trace_wait_attempts} attempts x ${trace_wait_delay}s"
+window_wait_timeout="${window_wait_attempts} attempts x ${window_wait_delay}s"
+
 binary=${1:-./image-ui-benchmark}
 if [[ -z ${WAYLAND_DISPLAY:-} || ! -S ${XDG_RUNTIME_DIR:-/nonexistent}/${WAYLAND_DISPLAY} ]]; then
-	printf 'Wayland smoke skipped: no Wayland display socket\n'
+	printf 'Wayland smoke skipped: no Wayland display socket (trace wait %s; window wait %s)\n' "$trace_wait_timeout" "$window_wait_timeout"
 	exit 0
 fi
 for command in niri jq wtype date mktemp grep seq sleep; do
 	if ! command -v "$command" >/dev/null 2>&1; then
-		printf 'Wayland smoke skipped: missing %s\n' "$command"
+		printf 'Wayland smoke skipped: missing %s (trace wait %s; window wait %s)\n' "$command" "$trace_wait_timeout" "$window_wait_timeout"
 		exit 0
 	fi
 done
 if [[ ! -x $binary ]]; then
-	printf 'Wayland smoke failed: benchmark executable not found: %s\n' "$binary" >&2
+	printf 'Wayland smoke failed: benchmark executable not found: %s (trace wait %s; window wait %s)\n' "$binary" "$trace_wait_timeout" "$window_wait_timeout" >&2
 	exit 1
 fi
 
@@ -43,14 +73,20 @@ fi
 wait_for_trace() {
 	trace=$1
 	pattern=$2
-	limit=${3:-200}
-	for _ in $(seq 1 "$limit"); do
+	for _ in $(seq 1 "$trace_wait_attempts"); do
 		if [[ -f $trace ]] && grep -Pq "$pattern" "$trace"; then
 			return 0
 		fi
-		sleep 0.025
+		if [[ -n ${pid:-} ]] && ! kill -0 "$pid" 2>/dev/null; then
+			printf 'Wayland smoke failed: benchmark process exited while waiting for trace event after %s: %s\n' "$trace_wait_timeout" "$pattern" >&2
+			if [[ -n ${log:-} && -f $log ]]; then
+				cat "$log" >&2
+			fi
+			return 1
+		fi
+		sleep "$trace_wait_delay"
 	done
-	printf 'Wayland smoke failed: trace event not observed: %s\n' "$pattern" >&2
+	printf 'Wayland smoke failed: trace event not observed after %s: %s\n' "$trace_wait_timeout" "$pattern" >&2
 	grep -Ev '^(frame_interval|complete)' "$trace" >&2 || true
 	niri msg --json windows | jq --argjson id "$window_id" '[.[] | select(.id == $id)]' >&2 || true
 	return 1
@@ -81,18 +117,22 @@ run_smoke() {
 		"$binary" --wayland-smoke "$target" >"$log" 2>&1 &
 	pid=$!
 	window_id=
-	for _ in $(seq 1 200); do
+	for _ in $(seq 1 "$window_wait_attempts"); do
+		if [[ -n ${pid:-} ]] && ! kill -0 "$pid" 2>/dev/null; then
+			break
+		fi
 		window_id=$(niri msg --json windows | jq -r --argjson before "$before_ids" '[.[] | select((.id as $id | ($before | index($id)) == null) and (.title | startswith("image-ui")))][0].id // empty')
 		if [[ -n $window_id ]]; then
 			break
 		fi
-		if ! kill -0 "$pid" 2>/dev/null; then
-			break
-		fi
-		sleep 0.025
+		sleep "$window_wait_delay"
 	done
 	if [[ -z $window_id ]]; then
-		printf 'Wayland smoke failed: benchmark window not found\n' >&2
+		if [[ -n ${pid:-} ]] && ! kill -0 "$pid" 2>/dev/null; then
+			printf 'Wayland smoke failed: benchmark process exited before its window appeared (window wait %s)\n' "$window_wait_timeout" >&2
+		else
+			printf 'Wayland smoke failed: benchmark window not found after %s\n' "$window_wait_timeout" >&2
+		fi
 		cat "$log" >&2
 		exit 1
 	fi
@@ -131,7 +171,7 @@ run_smoke() {
 	niri msg action focus-window --id "$window_id" >/dev/null
 	wtype -k Left
 	if ! wait "$pid"; then
-		printf 'Wayland smoke failed: benchmark process failed\n' >&2
+		printf 'Wayland smoke failed: benchmark process failed (trace wait %s; window wait %s)\n' "$trace_wait_timeout" "$window_wait_timeout" >&2
 		cat "$log" >&2
 		grep -Ev '^(frame_interval|complete)' "$trace" >&2 || true
 		exit 1
