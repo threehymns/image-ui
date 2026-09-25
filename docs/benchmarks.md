@@ -1,6 +1,6 @@
 # Viewer performance benchmarks
 
-The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, and startup phase tracing. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
+The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, Neighborhood prefetch, deterministic key-repeat simulations, and startup phase tracing. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
 
 ## Commands
 
@@ -48,9 +48,11 @@ The live command needs a Wayland socket plus `niri`, `jq`, and `wtype`. It exits
 | `alpha.tga` | 64x64 | Four deterministic alpha levels |
 | `opaque.bmp` | 96x64 | Small opaque image decode |
 | `large-4k.bmp` | 3840x2160 | 4K-class metadata decode and live rendering |
+| `large-4k-previous.bmp` | 3840x2160 | 4K immediate previous Sibling |
+| `large-4k_next.bmp` | 3840x2160 | 4K immediate next Sibling |
 | `siblings/sibling-000.bmp` through `sibling-127.bmp` | 96x64 each | Directory discovery and adjacent navigation |
 
-The 128 Sibling entries are hard links to the opaque fixture. They have independent paths for natural sorting and navigation without consuming 128 copies of the image. A user-supplied fixture directory is preserved; the suite only replaces its reserved `alpha.tga`, `opaque.bmp`, `large-4k.bmp`, and `sibling-*.bmp` files.
+The 128 Sibling entries are hard links to the opaque fixture. They have independent paths for natural sorting and navigation without consuming 128 copies of the image. The two 4K Neighbor files are hard links to the 4K fixture, so the live target has a full-resolution previous and next Sibling. A user-supplied fixture directory is preserved; the suite only replaces its reserved `alpha.tga`, `opaque.bmp`, `large-4k*.bmp`, and `sibling-*.bmp` files.
 
 ## Headless measurements
 
@@ -63,15 +65,19 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 | `sibling_cache_4k_cold`, `sibling_cache_4k_warm` | The same cache path with the 4K fixture and a 256 MiB budget |
 | `sibling_discovery` | Spawn, complete directory enumeration, natural sort, channel batches, and final batch through the current scanner |
 | `sibling_navigation` | Playlist step plus the current synchronous metadata decode |
+| `resident_sibling_switch` | One resident small-Sibling switch from key event through cache lookup, commit, and screen construction |
+| `resident_sibling_switch_4k` | One resident 3840x2160 Sibling switch through cache lookup, commit, and screen construction; decode setup is outside the timer |
+| `key_repeat_resident_right`, `key_repeat_resident_left` | Deterministic 16-key resident sequences that verify every available Sibling is displayed in order |
+| `key_repeat_faster_than_decode` | Deterministic 100-key burst with manual completions proving bounded pending work and latest-request-wins |
 | `frame_prepare_4k` | Zoom, pan, and 4K screen-element construction with one logical repeat tile |
 | `pattern_tile` | Creation of the 32x32 logical repeat tile containing 16 px cells |
 | `screen_construct_4k` | Current UI2 element construction and repeat-tile reuse |
 | `screen_resize_to_4k` | Three screen builds needed to move from 1920x1080 to 3840x2160 |
 | `startup_cpu` | `new_app`, 4K metadata decode, state setup, and 1024x768 screen construction; it is not process-launch time |
 
-`screen_construct_4k` and `frame_prepare_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements.
+`screen_construct_4k` and `frame_prepare_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements. The resident-switch rows likewise measure the state transition and UI2 element construction; their fixture decode and cache population happen before the stopwatch starts.
 
-Every row includes warmup count, fixed iteration count, cache label, byte budget, median, p95, cache metrics where applicable, and a returned-value checksum. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
+Every row includes warmup count, fixed iteration count, cache label, byte budget, median, p95, cache metrics where applicable, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The `prefetch requested`, `prefetched`, `prefetch skipped`, and `prefetch coalesced` columns count Neighborhood candidates and accepted full-resolution cache insertions. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
 
 ### Startup phase trace
 
@@ -103,9 +109,23 @@ The following rows were recorded on 2026-09-25 from commit `2defcde3dbe4` with 2
 
 The 16 KiB and 32 KiB opaque rows reject the 49,152-byte decoded-plus-renderer entry. The 64 KiB row retains it. The 4K row retains 33,177,600 CPU bytes plus 33,177,600 renderer bytes. The Filmstrip Thumbnail Cache is not part of these totals.
 
+## Neighborhood prefetch and key-repeat baseline
+
+The following repeatable headless rows were recorded on 2026-09-25 from commit `07702405e4b7` with `make benchmark`: two warmups, 10 measured iterations, both cache states, and the default 256 MiB full-resolution budget for the 4K row. The machine was the available Linux 7.1.8-arch1-3 x86_64 host with an Intel Core i7-8565U, 8 logical CPUs, 32,628,928 kB RAM, and `i915`; the V toolchain was 0.5.2 (`26fdab8`) with GCC 16.2.1.
+
+| Case | Median ms | p95 ms | User requested/displayed/skipped/coalesced | Prefetch requested/prefetched/skipped/coalesced | Max user/total pending | Checksum |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| `resident_sibling_switch`, small | 0.05 | 0.06 | 1/1/0/0 | 6/0/6/0 | 1/1 | `569416a912307dc6` |
+| `resident_sibling_switch_4k`, 3840x2160 | 0.06 | 0.07 | 1/1/0/0 | 6/0/6/0 | 1/1 | `9792aa42137fcab5` |
+| `key_repeat_resident_right`, 16 Siblings | 3.20 | 3.29 | 16/16/0/0 | 98/0/97/0 | 1/3 | `bde78c5b4a61bd17` |
+| `key_repeat_resident_left`, 16 Siblings | 3.23 | 3.56 | 16/16/0/0 | 97/0/97/16 | 1/3 | `695b4adc8cb6062a` |
+| `key_repeat_faster_than_decode`, 100 inputs | 5.25 | 5.33 | 100/1/99/98 | 600/0/598/196 | 2/5 | `e663f69a84b792e5` |
+
+The 4K resident-switch row keeps two 4K resources resident: 132,710,400 bytes of decoded CPU plus renderer accounting under a 268,435,456-byte budget. The row measures cache lookup, request generation, latest-request commit, and 3840x2160 UI2 element construction; it does not measure a decode or GPU presentation. The resident key-repeat rows prefill the cache before timing, and the faster-than-decode row uses manual completions so correctness does not depend on sleeps or wall-clock thresholds. In the resident rows, prefetched is zero because every candidate was already resident; the live run below records actual prefetch insertions.
+
 ## Live Wayland smoke
 
-Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen and complete directory scan, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300.
+Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen, complete directory scan, and a `prefetch_cached` event for the next Sibling, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300.
 
 The harness sends real Wayland key input through `wtype` and verifies each action before the next run:
 
@@ -114,9 +134,9 @@ The harness sends real Wayland key input through `wtype` and verifies each actio
 - `p` is available only in the benchmark build and calls the current `App.pan` path.
 - `z` is available only in the benchmark build and calls the current `App.zoom_in` path.
 
-The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
+The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, Neighborhood prefetch counters, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
 
-The cadence value is the interval between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame.
+The cadence and `switch_to_frame` values are intervals between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame.
 
 ## Recorded baseline
 
@@ -168,6 +188,30 @@ All returned-value checks passed.
 | Trace checksum | `1e2c2b207cd66efd` | `1e2c2b207cd66efd` |
 
 The two process labels are separate launches, not cold and warm versions of a file-backed background resource. The measured 3840x2094 viewport is not 4K, and the warm callback p95 exceeded 16.7 ms; no 4K or frame-time target claim is made. Frame callback cadence does not include a post-present GPU fence.
+
+### Live Wayland #21 evidence
+
+The following cold and warm runs were recorded on 2026-09-25 from commit `07702405e4b7` with `make benchmark-wayland`, 60 warmup frames, 360 total frames, and the same Intel Core i7-8565U / `i915` niri host. The harness observed the next 4K Sibling in the prefetch trace before sending Right.
+
+| Measurement | Cold process | Warm process |
+| --- | ---: | ---: |
+| Measured viewport | 3840x2094 | 3840x2094 |
+| Process launch to first content | 998.06 ms | 1231.02 ms |
+| Process launch to harness first input | 1251.57 ms | 1466.63 ms |
+| Toggle to screen build | 0.30 ms | 0.16 ms |
+| Resident Sibling switch to screen build | 1.54 ms | 1.55 ms |
+| Pan to screen build | 0.82 ms | 0.17 ms |
+| Zoom to screen build | 0.20 ms | 0.32 ms |
+| Resize request to measured-width screen build | 24.31 ms | 26.77 ms |
+| Frame callback median | 16.78 ms | 16.78 ms |
+| Frame callback p95 | 16.87 ms | 16.89 ms |
+| User requested/displayed/skipped/coalesced | 2/2/0/0 | 2/2/0/0 |
+| Prefetch requested/prefetched/skipped/coalesced | 9/3/6/0 | 9/3/6/0 |
+| Prefetch cached events | 3 | 3 |
+| Samples after warmup | 300 | 300 |
+| Trace checksum | `e9cfcab7b65f4077` | `e9cfcab7b65f4077` |
+
+The live viewport is 3840x2094 because the available compositor/window configuration reserves 66 vertical pixels; the image fixture itself is 3840x2160. The switch and frame values are build-callback measurements, not post-present GPU timestamps. This host therefore cannot provide a true 3840x2160 presented-frame claim, and the one-frame target remains a target for the cross-backend #26 integration work. The headless 3840x2160 resident-switch row is CPU/screen-construction evidence only.
 
 ### Startup phase evidence
 

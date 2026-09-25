@@ -8,6 +8,7 @@ A fast, lightweight desktop image viewer system application built with [V](https
 - **Hardware-Accelerated Canvas**: Direct Sokol/`gg` rendering pipeline with continuous cursor-anchored zoom, sub-pixel pan, 90-degree step rotation, and flip.
 - **Prioritized Neighborhood Sibling Scan**: Immediate adjacent ±50 files streamed over worker channel for instant arrow navigation, with non-blocking background folder discovery.
 - **Full-Resolution Sibling LRU**: Byte-bounded current and nearby decoded resources reuse resident data without another file read or full decode.
+- **Bounded Neighborhood Prefetch**: Immediate previous, current, and next Siblings are prefetched with user-priority cancellation and deterministic key-repeat coverage.
 - **Collapsible Filmstrip**: Bounded LRU-cached preview thumbnails (max 100 textures, ~20MB VRAM).
 - **Dual Texture Filtering**: Bilinear anti-aliasing on downscaling, sharp nearest-neighbor at high magnification for pixel peeping.
 - **Desktop & Wayland Integration**: Wayland CSD protocol support (`zxdg_decoration_manager_v1_mode_client_side`), FreeDesktop `.desktop` entry, OS trash integration (`gio trash`), and clipboard copy.
