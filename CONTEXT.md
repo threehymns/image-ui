@@ -18,7 +18,7 @@ _Avoid_: Camera, window frame, view bounds
 
 **Sibling**:
 An image file located within the same directory as the active image that can be traversed sequentially.
-_Avoid_: adjacent picture
+_Avoid_: Neighbor file, adjacent picture
 
 **Filmstrip**:
 The collapsible row of thumbnails representing sibling images for direct random-access navigation.

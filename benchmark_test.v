@@ -12,6 +12,39 @@ fn test_benchmark_sample_summary_uses_fixed_percentiles() {
 	assert summary.p95_ns == 19
 }
 
+fn test_benchmark_launch_clock_conversion_and_fallback() {
+	assert benchmark_launch_mono_ns('9000', 10000, 8_000_000, 7_800_000) == 7_000_000
+	assert benchmark_launch_mono_ns('10000', 10000, 8_000_000, 7_800_000) == 8_000_000
+	assert benchmark_launch_mono_ns('', 10000, 8_000_000, 7_800_000) == 7_800_000
+	assert benchmark_launch_mono_ns('0', 10000, 8_000_000, 7_800_000) == 7_800_000
+	assert benchmark_launch_mono_ns('not-a-time', 10000, 8_000_000, 7_800_000) == 7_800_000
+	assert benchmark_launch_mono_ns('10001', 10000, 8_000_000, 7_800_000) == 7_800_000
+	assert benchmark_launch_mono_ns('100000000000000000000000', 10000, 8_000_000, 7_800_000) == 7_800_000
+	assert benchmark_fallback_launch_ns(0, 8_000_000) == 8_000_000
+	assert benchmark_fallback_launch_ns(9_000_000, 8_000_000) == 8_000_000
+}
+
+fn test_live_trace_uses_converted_launch_for_phase_output() {
+	path := os.join_path(os.temp_dir(), 'image-ui-launch-trace-${os.getpid()}.tsv')
+	os.rm(path) or {}
+	defer {
+		os.rm(path) or {}
+	}
+	mut trace := new_benchmark_live_trace_with_clock(path, '9000', 10000, 8_000_000, 7_800_000)
+	assert trace.launch_us == 7000
+	assert trace.launch_mono_us == 7000
+	process_mark := trace.phase_trace.mark_for(.process_launch) or { panic('missing process launch mark') }
+	assert process_mark.monotonic_ns == 7_000_000
+	trace.mark_phase(.window_creation, 8_000_000)
+	rows := os.read_lines(path) or { panic(err) }
+	assert rows.len == 2
+	process_row := rows[0].split('\t')
+	window_row := rows[1].split('\t')
+	assert process_row[6] == 'process_launch'
+	assert window_row[1] == '1000'
+	assert window_row[6] == 'window_creation'
+}
+
 fn test_benchmark_fixture_generation_is_deterministic_and_decodable() {
 	root := os.join_path(os.temp_dir(), 'image-ui-benchmark-fixtures-${os.getpid()}')
 	os.rmdir_all(root) or {}

@@ -2,11 +2,61 @@
 module main
 
 import os
+import strconv
 import time
 import sokol.sapp
 import ui2
 
 __global benchmark_process_launch_ns = u64(0)
+
+fn benchmark_wall_time_us() i64 {
+	return time.utc().unix_micro()
+}
+
+fn parse_benchmark_launch_us(value string) ?u64 {
+	normalized := value.trim_space()
+	if normalized.len == 0 {
+		return none
+	}
+	parsed := strconv.common_parse_uint(normalized, 10, 64, true, true) or { return none }
+	if parsed == 0 {
+		return none
+	}
+	return parsed
+}
+
+fn benchmark_fallback_launch_ns(process_launch_ns u64, mono_now_ns u64) u64 {
+	if process_launch_ns > 0 && process_launch_ns <= mono_now_ns {
+		return process_launch_ns
+	}
+	return mono_now_ns
+}
+
+fn benchmark_launch_mono_ns(launch_value string, wall_now_us i64, mono_now_ns u64,
+	process_launch_ns u64) u64 {
+	fallback := benchmark_fallback_launch_ns(process_launch_ns, mono_now_ns)
+	wall_launch_us := parse_benchmark_launch_us(launch_value) or { return fallback }
+	if wall_now_us <= 0 {
+		return fallback
+	}
+	wall_now := u64(wall_now_us)
+	if wall_launch_us > wall_now {
+		return fallback
+	}
+	delta_us := wall_now - wall_launch_us
+	if delta_us > (u64(1) << 63) / 1000 {
+		return fallback
+	}
+	delta_ns := delta_us * 1000
+	if delta_ns > mono_now_ns {
+		return fallback
+	}
+	launch_ns := mono_now_ns - delta_ns
+	if launch_ns == 0 {
+		return fallback
+	}
+	return launch_ns
+}
 
 struct LiveTraceRow {
 pub:
@@ -264,13 +314,9 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 	return summary
 }
 
-pub fn new_benchmark_live_trace() BenchmarkLiveTrace {
-	path := os.getenv('IMAGE_UI_BENCHMARK_TRACE')
-	launch_ns := if benchmark_process_launch_ns > 0 {
-		benchmark_process_launch_ns
-	} else {
-		time.sys_mono_now()
-	}
+fn new_benchmark_live_trace_with_clock(path string, launch_value string, wall_now_us i64,
+	mono_now_ns u64, process_launch_ns u64) BenchmarkLiveTrace {
+	launch_ns := benchmark_launch_mono_ns(launch_value, wall_now_us, mono_now_ns, process_launch_ns)
 	launch_mono_us := i64(launch_ns / 1000)
 	mut trace := BenchmarkLiveTrace{
 		path:           path
@@ -291,6 +337,15 @@ pub fn new_benchmark_live_trace() BenchmarkLiveTrace {
 	trace.enabled = path.len > 0
 	trace.mark_phase(.process_launch, launch_ns)
 	return trace
+}
+
+pub fn new_benchmark_live_trace() BenchmarkLiveTrace {
+	path := os.getenv('IMAGE_UI_BENCHMARK_TRACE')
+	launch_value := os.getenv('IMAGE_UI_BENCHMARK_LAUNCH_US')
+	wall_now_us := benchmark_wall_time_us()
+	mono_now_ns := time.sys_mono_now()
+	return new_benchmark_live_trace_with_clock(path, launch_value, wall_now_us, mono_now_ns,
+		benchmark_process_launch_ns)
 }
 
 fn (mut trace BenchmarkLiveTrace) begin_frame(width int, height int) {
