@@ -263,7 +263,7 @@ The current live harness cannot prove presented-frame GPU time. A later resource
 
 ## Final #26 validation report
 
-Validation source: integration commit `3e0ec3a` with UI2 submodule `777dcbc`. The benchmark records the exact source state for every run. Timing thresholds remain reporting-only in hosted CI. The report separates measured evidence, targets, and unavailable platform work.
+Validation source: integration commit `3e0ec3a` with UI2 submodule `3220747`. The benchmark records the exact source state for every run. Timing thresholds remain reporting-only in hosted CI. The report separates measured evidence, targets, and unavailable platform work.
 
 ### Commands and evidence
 
