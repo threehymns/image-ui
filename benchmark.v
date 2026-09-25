@@ -2,6 +2,7 @@ module main
 
 import os
 import time
+import ui2
 
 pub enum BenchmarkCacheSelection {
 	cold
@@ -66,6 +67,7 @@ pub mut:
 }
 
 pub fn benchmark_main() {
+	benchmark_process_launch_ns = time.sys_mono_now()
 	args := if os.args.len > 1 { os.args[1..] } else { []string{} }
 	if args.len == 0 {
 		run_headless_benchmark(BenchmarkConfig{}) or { panic(err) }
@@ -330,6 +332,7 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.cache_budget} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.cache_hits} | ${result.cache_misses} | ${result.cache_updates} | ${result.cache_evictions} | ${result.cache_bytes} | ${result.checksum.hex()} | ${status} |')
 		verified = verified && result.verified
 	}
+	print_headless_startup_phases()
 	if owned_root {
 		os.rmdir_all(root) or {}
 	}
@@ -591,6 +594,14 @@ fn run_wayland_smoke(target string) ! {
 	if !summary.complete {
 		return error('live trace did not complete')
 	}
+	for phase in startup_phase_names {
+		if (summary.phase_ns[phase] or { -1 }) < 0 {
+			return error('live trace lacks startup phase: ${phase}')
+		}
+	}
+	if !summary.phase_monotonic {
+		return error('live trace startup phases are not monotonic')
+	}
 	if summary.process_to_first_content_ns < 0 || summary.process_to_first_input_ns < 0 {
 		return error('live trace lacks process-to-content or process-to-input marks')
 	}
@@ -610,6 +621,10 @@ fn run_wayland_smoke(target string) ! {
 	println('cache=${os.getenv('IMAGE_UI_BENCHMARK_CACHE')} target=${target}')
 	println('config=warmup_frames:${warmup_frames} frame_target:${frame_target} measured_frames:${summary.frame_samples}')
 	println('measured_viewport=${summary.viewport_width}x${summary.viewport_height}')
+	println('startup_phase_order=${summary.phase_order.join('>')}')
+	for phase in startup_phase_names {
+		println('startup_phase=${phase} elapsed_ms=${benchmark_ms(summary.phase_ns[phase] or { 0 })}')
+	}
 	println('process_to_first_content_ms=${benchmark_ms(summary.process_to_first_content_ns)}')
 	println('process_to_first_input_ms=${benchmark_ms(summary.process_to_first_input_ns)}')
 	println('toggle_to_frame_ms=${benchmark_ms(summary.toggle_to_frame_ns)}')
@@ -621,6 +636,33 @@ fn run_wayland_smoke(target string) ! {
 	println('frame_callback_p95_ms=${benchmark_ms(summary.frame_p95_ns)}')
 	println('checksum=${summary.checksum.hex()} status=ok')
 	println('measurement_note=frame values are Viewer build-callback cadence; no post-present GPU fence is exposed')
+}
+
+fn print_headless_startup_phases() {
+	mut trace := new_startup_phase_trace(time.sys_mono_now())
+	trace.mark_now('process_launch')
+	mut app := new_app()
+	app.set_canvas_size(1024, 768)
+	trace.mark_now('window_creation')
+	_, _ := ui2.startup_font_paths()
+	trace.mark_now('font_work')
+	app.set_image_loaded('phase-fixture.bmp', 96, 64)
+	_ = benchmark_viewer_for_app(mut app, 1024, 768).build_screen_at_size(1024, 768)
+	trace.mark_now('ui2_setup')
+	trace.mark_now('gpu_setup')
+	trace.mark_now('first_content')
+	trace.mark_now('first_input')
+	trace.mark_now('directory_completion')
+	assert trace.is_monotonic()
+	assert trace.has_all_startup_phases()
+	print_benchmark('Viewer headless startup phases')
+	println('measurement=phase-order smoke; elapsed values are monotonic CPU trace values, not process-launch claims')
+	println('phase_order=${trace.ordered_phases().join('>')}')
+	println('| phase | elapsed ms | monotonic ns | order |')
+	println('| --- | ---: | ---: | ---: |')
+	for mark in trace.marks {
+		println('| ${mark.phase} | ${benchmark_ms(mark.elapsed_ns)} | ${mark.monotonic_ns} | ${mark.order} |')
+	}
 }
 
 fn benchmark_cache_name(cache BenchmarkCacheSelection) string {

@@ -4,7 +4,7 @@ A fast, lightweight desktop image viewer system application built with [V](https
 
 ## Features
 
-- **Measured Performance**: Checked-in headless and live Wayland benchmarks with deterministic fixtures, cache controls, median/p95 output, and checksum gates. Sub-10ms startup and 60 FPS at 4K remain targets.
+- **Measured Performance**: Checked-in headless and live Wayland benchmarks with deterministic fixtures, cache controls, median/p95 output, phase traces, and checksum gates. The 10 ms startup value is an aspiration; 60 FPS at 4K remains a target.
 - **Hardware-Accelerated Canvas**: Direct Sokol/`gg` rendering pipeline with continuous cursor-anchored zoom, sub-pixel pan, 90-degree step rotation, and flip.
 - **Prioritized Neighborhood Sibling Scan**: Immediate adjacent ±50 files streamed over worker channel for instant arrow navigation, with non-blocking background folder discovery.
 - **Full-Resolution Sibling LRU**: Byte-bounded current and nearby decoded resources reuse resident data without another file read or full decode.
@@ -74,7 +74,13 @@ Use `--warmup`, `--iterations`, `--cache`, and `--cache-budget` through `BENCHMA
 
 ## Performance claims
 
-The checked-in measurements describe the current path. The current 4K image metadata decode and synchronous Sibling decode are measured costs, not guarantees; the transparency background uses a small repeat tile rather than a full-window raster. Sub-10ms complete startup, 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom remain targets. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence.
+### Measured results
+
+The checked-in measurements describe the current path. The benchmark reports separate monotonic startup phases for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. The current 4K image metadata and full-resource decode are measured costs, not guarantees; the transparency background uses a small repeat tile rather than a full-window raster. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence. See the [benchmark methodology and recorded results](./docs/benchmarks.md).
+
+### Aspiration
+
+The 10 ms complete-process startup value is an aspiration, not a measured guarantee. The 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom values remain targets until the corresponding measurements support them.
 
 ## Forks & upstream
 

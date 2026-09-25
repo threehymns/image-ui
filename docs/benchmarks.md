@@ -1,6 +1,6 @@
 # Viewer performance benchmarks
 
-The root benchmark suite measures the current Viewer, including the full-resolution Sibling resource cache. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
+The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, and startup phase tracing. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
 
 ## Commands
 
@@ -73,6 +73,10 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 Every row includes warmup count, fixed iteration count, cache label, byte budget, median, p95, cache metrics where applicable, and a returned-value checksum. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
 
+### Startup phase trace
+
+The headless suite also emits a phase-order smoke table with monotonic timestamps for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. It validates the ordering seam without claiming to measure a real process launch or GPU present. The live suite records the same phase names from the running Viewer process. Font discovery, metrics, and symbol fallback preparation are scheduled after context creation and run in the background; the first-content mark is emitted only after an image resource is ready and the completed UI2 frame callback.
+
 ## Cache controls
 
 `--cache cold`, `--cache warm`, and `--cache both` select which screen and Sibling-cache cases are run. `--cache-budget` replaces the default 16 KiB, 32 KiB, and 64 KiB Sibling-cache budgets with one byte value. The transparency background is a logical repeat tile and has no file cache.
@@ -110,7 +114,7 @@ The harness sends real Wayland key input through `wtype` and verifies each actio
 - `p` is available only in the benchmark build and calls the current `App.pan` path.
 - `z` is available only in the benchmark build and calls the current `App.zoom_in` path.
 
-The trace reports process launch to first content, process launch to the harness's first input, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, and a trace checksum.
+The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
 
 The cadence value is the interval between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame.
 
@@ -164,6 +168,23 @@ All returned-value checks passed.
 | Trace checksum | `1e2c2b207cd66efd` | `1e2c2b207cd66efd` |
 
 The two process labels are separate launches, not cold and warm versions of a file-backed background resource. The measured 3840x2094 viewport is not 4K, and the warm callback p95 exceeded 16.7 ms; no 4K or frame-time target claim is made. Frame callback cadence does not include a post-present GPU fence.
+
+### Startup phase evidence
+
+Recorded on 2026-09-25 from commit `3abdad6` with `make benchmark-wayland` on niri, the available Intel Core i7-8565U / `i915` machine. Values are monotonic elapsed milliseconds from process launch at the phase mark. The font mark is the scheduling point for background font preparation; the first-content mark follows a ready decoded resource and the completed UI2 frame callback.
+
+| Phase | Cold process | Warm process |
+| --- | ---: | ---: |
+| Process launch | 0.00 | 0.00 |
+| Window creation | 79.20 | 115.43 |
+| Font work scheduled | 0.10 | 0.14 |
+| UI2 setup | 0.09 | 0.12 |
+| GPU setup | 79.23 | 115.51 |
+| First content | 1764.56 | 1941.09 |
+| First input | 1933.09 | 2105.12 |
+| Directory completion | 129.92 | 181.83 |
+
+The observed order was `process_launch > ui2_setup > font_work > window_creation > gpu_setup > directory_completion > first_content > first_input` for both runs. The live checksum was `df304cfd721b348c`; the measured viewport was 3840x2094. These are local timing samples, not a 10 ms, 4K, or post-present GPU guarantee.
 
 ## Diagnostics versus repeatable results
 
