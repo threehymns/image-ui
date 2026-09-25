@@ -1,0 +1,4 @@
+[submodule "ui2"]
+	path = ui2
+	url = https://github.com/threehymns/ui2.git
+	branch = dev

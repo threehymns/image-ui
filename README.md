@@ -15,8 +15,18 @@ A fast, lightweight desktop image viewer system application built with [V](https
 ## Building & Running
 
 ### Prerequisites
-- [V compiler](https://github.com/vlang/v) (latest master or release)
-- `ui` module (`v install ui`)
+- The [threehymns/v](https://github.com/threehymns/v) toolchain fork (`dev` branch) — it carries patches stock V releases lack (see "Forks & upstream" below). Build it with `make` inside the checkout, then ensure its `v` is on your `PATH`:
+```bash
+git clone --branch dev https://github.com/threehymns/v.git
+make -C v
+export PATH="$PWD/v:$PATH"
+```
+- The `ui2` fork submodule — clone with submodules:
+```bash
+git clone --recurse-submodules https://github.com/threehymns/image-ui.git
+# or, inside an existing checkout:
+git submodule update --init
+```
 - Wayland development libraries (on Linux Wayland sessions: `wayland-client`, `wayland-cursor`, `wayland-egl`, `xkbcommon`)
 
 ### Build Commands
@@ -43,8 +53,15 @@ Or using the V compiler directly:
 
 ### Running Tests
 ```bash
-v test .
+make test
 ```
+
+## Forks & upstream
+
+This project depends on two personal forks, both tracked on their `dev` branches. Each exists only to carry a small patch set until it lands upstream:
+
+- **[threehymns/v](https://github.com/threehymns/v)** (toolchain): folds Shift-modified keysyms to lowercase in the Sokol Wayland backend so Shift+letter shortcuts resolve, and stops V3 codegen from emitting `typedef struct T T;` guesses for types owned by system headers (e.g. X11's anonymous-struct typedefs), which broke every local build. CI builds this fork from source.
+- **[threehymns/ui2](https://github.com/threehymns/ui2)** (vendored above as the `ui2/` submodule): forwards unhandled scroll gestures as `scroll:` events, adds `pixelated` sampling and `flip_h`/`flip_v` mirroring, and decodes keyboard modifiers with the correct `sapp.Modifier` masks.
 
 ## Architecture & Domain Model
 
