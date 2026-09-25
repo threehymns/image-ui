@@ -37,7 +37,7 @@ Run the live smoke on niri:
 make benchmark-wayland
 ```
 
-The live command needs a Wayland socket plus `niri`, `jq`, and `wtype`. It exits with a clear skipped message when those requirements are absent. The script restores the previously focused window on exit and sends a deterministic sustained Left/Right sequence; `IMAGE_UI_BENCHMARK_REPEAT_KEYS` controls the number of keys in each direction.
+The live command needs a Wayland socket plus `niri`, `jq`, and `wtype`. It exits with a clear skipped message when those requirements are absent. The script restores the previously focused window on exit and sends a deterministic sustained Left/Right sequence; `IMAGE_UI_BENCHMARK_REPEAT_KEYS` controls the number of keys in each direction. `IMAGE_UI_BENCHMARK_TRACE_WAIT_ATTEMPTS` and `IMAGE_UI_BENCHMARK_WINDOW_WAIT_ATTEMPTS` control the polling budgets, with defaults of 400 attempts at 0.025 seconds per attempt; `IMAGE_UI_BENCHMARK_TRACE_WAIT_DELAY` and `IMAGE_UI_BENCHMARK_WINDOW_WAIT_DELAY` override the polling delays.
 
 Native contract commands for the matching host are:
 
