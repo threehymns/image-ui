@@ -7,6 +7,6 @@ Default desktop image viewers frequently encounter folders with thousands of med
 We decouple initial image rendering from folder discovery. The target image is loaded and rendered immediately on the main thread. A background worker thread is spawned to first scan and resolve an immediate neighborhood (±50 files) around the target image and stream it via a V channel to unblock Left/Right arrow navigation within milliseconds, followed by streaming the remaining folder entries in progressive batches.
 
 ## Consequences
-- Guaranteed sub-10ms UI startup regardless of folder size.
+- Sub-10ms complete startup remains a target, not a guarantee. The checked-in benchmark measures the current directory and startup paths.
 - Sibling navigation works immediately for adjacent photos.
 - Requires thread-safe playlist indexing and progressive UI list updates.

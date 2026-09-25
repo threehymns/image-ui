@@ -9,4 +9,5 @@ We bypass `ui.picture` and implement image presentation via a custom `ui.canvas_
 ## Consequences
 - Full control over transformation matrices, viewport clipping, and zoom interpolation.
 - Ability to draw transparent grid patterns and overlay HUD graphics without widget hierarchy overhead.
+- Performance claims are checked against the root benchmark suite. The 60+ FPS requirement remains a target until a backend post-present measurement records it.
 - Requires managing image cache invalidation and mouse drag/wheel event coordinates manually within the canvas component.
