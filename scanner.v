@@ -18,12 +18,15 @@ pub const supported_image_extensions = [
 ]
 
 pub const scanner_batch_size = 50
+pub const scanner_neighborhood_radius = 50
 
 pub struct SiblingBatch {
 pub:
-	items           []string
-	is_neighborhood bool
-	is_last         bool
+	items            []string
+	is_neighborhood  bool
+	is_last          bool
+	generation       int
+	is_first_content bool
 }
 
 // is_image_file checks if the path points to a non-hidden file with a supported image extension.
@@ -141,12 +144,97 @@ pub fn natural_sort(mut items []string) {
 	items.sort_with_compare(natural_compare_paths)
 }
 
+fn first_image_path(image_files []string) ?string {
+	if image_files.len == 0 {
+		return none
+	}
+	mut first := image_files[0]
+	for i in 1 .. image_files.len {
+		candidate := image_files[i]
+		if natural_compare_paths(candidate, first) < 0 {
+			first = candidate
+		}
+	}
+	return first
+}
+
+fn target_index(image_files []string, target_path string) int {
+	if target_path == '' {
+		return -1
+	}
+	target_name := os.file_name(target_path)
+	target_clean := os.real_path(target_path)
+	for i, path in image_files {
+		if path == target_path {
+			return i
+		}
+		if target_name != '' && os.file_name(path) == target_name && os.real_path(path) == target_clean {
+			return i
+		}
+	}
+	return -1
+}
+
 // find_first_image_in_dir locates the first supported image file in a directory in natural sort order.
 pub fn find_first_image_in_dir(dir_path string) ?string {
 	if !os.is_dir(dir_path) {
 		return none
 	}
 	entries := os.ls(dir_path) or { return none }
+	mut first := ''
+	for entry in entries {
+		full_path := os.join_path(dir_path, entry)
+		if !os.is_dir(full_path) && is_image_file(full_path) {
+			if first == '' || natural_compare_paths(full_path, first) < 0 {
+				first = full_path
+			}
+		}
+	}
+	if first == '' {
+		return none
+	}
+	return first
+}
+
+fn send_scan_batch(ch chan SiblingBatch, cancel chan bool, batch SiblingBatch) bool {
+	select {
+		ch <- batch {
+			return true
+		}
+		<-cancel {
+			return false
+		}
+	}
+	return false
+}
+
+fn scan_directory_siblings_with_generation_and_cancel(dir_path string, target_path string, generation int, ch chan SiblingBatch, cancel chan bool) {
+	if !os.is_dir(dir_path) {
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            []
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: false
+		}) {
+			return
+		}
+		return
+	}
+
+	entries := os.ls(dir_path) or {
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            []
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: false
+		}) {
+			return
+		}
+		return
+	}
+
 	mut image_files := []string{}
 	for entry in entries {
 		full_path := os.join_path(dir_path, entry)
@@ -154,105 +242,134 @@ pub fn find_first_image_in_dir(dir_path string) ?string {
 			image_files << full_path
 		}
 	}
+
 	if image_files.len == 0 {
-		return none
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            []
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: false
+		}) {
+			return
+		}
+		return
 	}
+
+	direct_target := target_path != '' && is_image_file(target_path) && !os.is_dir(target_path)
+	mut resolved_target := target_path
+	if !direct_target {
+		resolved_target = first_image_path(image_files) or {
+			if !send_scan_batch(ch, cancel, SiblingBatch{
+				items:            []
+				is_neighborhood:  true
+				is_last:          true
+				generation:       generation
+				is_first_content: false
+			}) {
+				return
+			}
+			return
+		}
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            [resolved_target]
+			is_neighborhood:  true
+			is_last:          false
+			generation:       generation
+			is_first_content: true
+		}) {
+			return
+		}
+	}
+
 	natural_sort(mut image_files)
-	return image_files[0]
+	mut target_idx := target_index(image_files, resolved_target)
+	if target_idx < 0 {
+		resolved_target = image_files[0]
+		target_idx = 0
+	}
+
+	neigh_start := math.max(0, target_idx - scanner_neighborhood_radius)
+	neigh_end := math.min(image_files.len, target_idx + scanner_neighborhood_radius + 1)
+	neighborhood := image_files[neigh_start..neigh_end].clone()
+	first_content := direct_target
+
+	if image_files.len <= neighborhood.len {
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            neighborhood
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: first_content
+		}) {
+			return
+		}
+		return
+	}
+
+	if !send_scan_batch(ch, cancel, SiblingBatch{
+		items:            neighborhood
+		is_neighborhood:  true
+		is_last:          false
+		generation:       generation
+		is_first_content: first_content
+	}) {
+		return
+	}
+
+	mut last_sent := false
+	for i := neigh_end; i < image_files.len; i += scanner_batch_size {
+		chunk_end := math.min(image_files.len, i + scanner_batch_size)
+		is_last := chunk_end == image_files.len && neigh_start == 0
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            image_files[i..chunk_end].clone()
+			is_neighborhood:  false
+			is_last:          is_last
+			generation:       generation
+			is_first_content: false
+		}) {
+			return
+		}
+		last_sent = is_last
+	}
+
+	for i := neigh_start; i > 0; {
+		chunk_start := math.max(0, i - scanner_batch_size)
+		is_last := chunk_start == 0
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            image_files[chunk_start..i].clone()
+			is_neighborhood:  false
+			is_last:          is_last
+			generation:       generation
+			is_first_content: false
+		}) {
+			return
+		}
+		last_sent = is_last
+		i = chunk_start
+	}
+
+	if !last_sent {
+		if !send_scan_batch(ch, cancel, SiblingBatch{
+			items:            []
+			is_neighborhood:  false
+			is_last:          true
+			generation:       generation
+			is_first_content: false
+		}) {
+			return
+		}
+	}
+}
+
+fn scan_directory_siblings_with_generation(dir_path string, target_path string, generation int, ch chan SiblingBatch) {
+	cancel := chan bool{}
+	scan_directory_siblings_with_generation_and_cancel(dir_path, target_path, generation, ch, cancel)
 }
 
 // scan_directory_siblings traverses dir_path, identifies supported sibling images,
 // sorts them naturally, and streams the immediate ±50 neighborhood first over ch,
 // followed by remaining entries in progressive batches.
 pub fn scan_directory_siblings(dir_path string, target_path string, ch chan SiblingBatch) {
-	if !os.is_dir(dir_path) {
-		ch <- SiblingBatch{
-			items:           []
-			is_neighborhood: true
-			is_last:         true
-		}
-		return
-	}
-
-	entries := os.ls(dir_path) or {
-		ch <- SiblingBatch{
-			items:           []
-			is_neighborhood: true
-			is_last:         true
-		}
-		return
-	}
-
-	mut image_files := []string{}
-	for entry in entries {
-		full_path := os.join_path(dir_path, entry)
-		if !os.is_dir(full_path) && is_image_file(full_path) {
-			image_files << full_path
-		}
-	}
-
-	if image_files.len == 0 {
-		ch <- SiblingBatch{
-			items:           []
-			is_neighborhood: true
-			is_last:         true
-		}
-		return
-	}
-
-	natural_sort(mut image_files)
-
-	mut target_idx := 0
-	target_clean := os.real_path(target_path)
-	for i, p in image_files {
-		if p == target_path || os.real_path(p) == target_clean {
-			target_idx = i
-			break
-		}
-	}
-
-	// Immediate neighborhood: closest ±50 files around target
-	neigh_start := math.max(0, target_idx - 50)
-	neigh_end := math.min(image_files.len, target_idx + 51)
-	neighborhood := image_files[neigh_start..neigh_end].clone()
-
-	if image_files.len <= neighborhood.len {
-		ch <- SiblingBatch{
-			items:           neighborhood
-			is_neighborhood: true
-			is_last:         true
-		}
-		return
-	}
-
-	// 1. Stream prioritized neighborhood batch first
-	ch <- SiblingBatch{
-		items:           neighborhood
-		is_neighborhood: true
-		is_last:         false
-	}
-
-	// 2. Stream succeeding files in progressive batches
-	batch_size := scanner_batch_size
-	for i := neigh_end; i < image_files.len; i += batch_size {
-		chunk_end := math.min(image_files.len, i + batch_size)
-		is_last := (chunk_end == image_files.len) && (neigh_start == 0)
-		ch <- SiblingBatch{
-			items:           image_files[i..chunk_end].clone()
-			is_neighborhood: false
-			is_last:         is_last
-		}
-	}
-
-	// 3. Stream preceding files in progressive batches
-	for i := neigh_start; i > 0; {
-		chunk_start := math.max(0, i - batch_size)
-		is_last := (chunk_start == 0)
-		ch <- SiblingBatch{
-			items:           image_files[chunk_start..i].clone()
-			is_neighborhood: false
-			is_last:         is_last
-		}
-		i = chunk_start
-	}
+	scan_directory_siblings_with_generation(dir_path, target_path, 0, ch)
 }
