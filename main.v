@@ -625,6 +625,11 @@ $if viewer_benchmark ? {
 		mut app := unsafe { global_viewer_app }
 		app.benchmark_live.mark_phase(ui2.startup_phase_name(phase), at_ns)
 	}
+
+	fn handle_ui2_frame_complete() {
+		mut app := unsafe { global_viewer_app }
+		app.benchmark_live.complete_frame()
+	}
 }
 
 fn build_viewer_screen() ui2.Element {
@@ -675,6 +680,7 @@ pub fn launch_viewer(image_path string) {
 	$if viewer_benchmark ? {
 		app.benchmark_live = new_benchmark_live_trace()
 		ui2.set_startup_phase_handler(handle_ui2_startup_phase)
+		ui2.set_frame_complete_handler(handle_ui2_frame_complete)
 	}
 
 	ui2.on_key_event(handle_viewer_key)

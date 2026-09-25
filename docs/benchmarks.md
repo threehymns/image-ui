@@ -148,6 +148,23 @@ All returned-value checks passed.
 
 The two process labels are separate launches, not cold and warm versions of a file-backed background resource. The measured 3840x2094 viewport is not 4K, and the warm callback p95 exceeded 16.7 ms; no 4K or frame-time target claim is made. Frame callback cadence does not include a post-present GPU fence.
 
+### Startup phase evidence
+
+Recorded on 2026-09-25 from commit `d734f45` with `make benchmark-wayland` on niri, the available Intel Core i7-8565U / `i915` machine. Values are monotonic elapsed milliseconds from process launch at the phase mark. The font mark is the scheduling point for background font preparation; the first-content mark follows a ready decoded resource and renderer submission.
+
+| Phase | Cold process | Warm process |
+| --- | ---: | ---: |
+| Process launch | 0.00 | 0.00 |
+| Window creation | 114.48 | 456.28 |
+| Font work scheduled | 0.18 | 0.27 |
+| UI2 setup | 0.16 | 0.23 |
+| GPU setup | 114.53 | 456.34 |
+| First content | 1909.78 | 3987.29 |
+| First input | 2746.98 | 5846.55 |
+| Directory completion | 171.05 | 576.09 |
+
+The observed order was `process_launch > ui2_setup > font_work > window_creation > gpu_setup > directory_completion > first_content > first_input` for both runs. The live checksum was `495817e7d9c03b89`; the measured viewport was 3840x2094. These are local timing samples, not a 10 ms, 4K, or post-present GPU guarantee.
+
 ## Diagnostics versus repeatable results
 
 The table above is the checked-in baseline. It uses fixed fixtures, fixed sample counts, explicit cache controls, checksums, and recorded build and hardware state.

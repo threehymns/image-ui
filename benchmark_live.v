@@ -47,10 +47,12 @@ pub mut:
 	frame_target    int
 	warmup_frames   int
 	has_frame       bool
-	has_content     bool
-	has_input       bool
-	has_scan        bool
-	pending_actions []LivePendingAction
+	has_content         bool
+	has_input           bool
+	has_scan            bool
+	frame_content_ready bool
+	frame_scan_complete bool
+	pending_actions     []LivePendingAction
 	pending_resize  bool
 	finished        bool
 	frames          []LiveFrameSample
@@ -230,12 +232,8 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 	}
 	now_mono_us := i64(time.sys_mono_now() / 1000)
 	trace.frame_count++
-	if content_ready && !trace.has_content {
-		trace.has_content = true
-		trace.mark_phase('first_content', u64(now_mono_us) * 1000)
-		trace.write_event('first_content', trace.last_width, trace.last_height, trace.frame_count,
-			now_mono_us - trace.launch_mono_us, '')
-	}
+	trace.frame_content_ready = content_ready
+	trace.frame_scan_complete = scan_complete
 	if trace.pending_resize {
 		trace.write_event('resize_observed', trace.last_width, trace.last_height, trace.frame_count, 0, '')
 		trace.pending_resize = false
@@ -245,11 +243,6 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 			now_mono_us - pending.at_us, pending.action)
 	}
 	trace.pending_actions.clear()
-	if scan_complete && !trace.has_scan {
-		trace.has_scan = true
-		trace.mark_phase('directory_completion', u64(now_mono_us) * 1000)
-		trace.write_event('scan_complete', trace.last_width, trace.last_height, trace.frame_count, 0, '')
-	}
 	if trace.frame_count >= trace.frame_target && !trace.finished {
 		for frame in trace.frames {
 			trace.write_event('frame_interval', frame.width, frame.height, frame.order, frame.interval_us, '')
@@ -257,6 +250,24 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 		trace.write_event('complete', trace.last_width, trace.last_height, trace.frame_count, 0, path)
 		trace.finished = true
 		sapp.request_quit()
+	}
+}
+
+pub fn (mut trace BenchmarkLiveTrace) complete_frame() {
+	if !trace.enabled {
+		return
+	}
+	now_mono_us := i64(time.sys_mono_now() / 1000)
+	if trace.frame_content_ready && !trace.has_content {
+		trace.has_content = true
+		trace.mark_phase('first_content', u64(now_mono_us) * 1000)
+		trace.write_event('first_content', trace.last_width, trace.last_height, trace.frame_count,
+			now_mono_us - trace.launch_mono_us, '')
+	}
+	if trace.frame_scan_complete && !trace.has_scan {
+		trace.has_scan = true
+		trace.mark_phase('directory_completion', u64(now_mono_us) * 1000)
+		trace.write_event('scan_complete', trace.last_width, trace.last_height, trace.frame_count, 0, '')
 	}
 }
 

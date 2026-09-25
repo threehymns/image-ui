@@ -73,6 +73,16 @@ fn test_benchmark_config_exposes_fixed_sample_and_cache_controls() {
 	assert parse_benchmark_config(['--cache', 'warm']) or { panic(err) }.cache == .warm
 }
 
+fn test_live_trace_marks_content_after_frame_completion() {
+	mut trace := new_benchmark_live_trace()
+	trace.enabled = true
+	trace.path = ''
+	trace.end_frame('sample.bmp', false, true)
+	assert trace.phase_trace.mark_for('first_content') == none
+	trace.complete_frame()
+	assert trace.phase_trace.mark_for('first_content') != none
+}
+
 fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	path := os.join_path(os.temp_dir(), 'image-ui-live-trace-${os.getpid()}.tsv')
 	trace := [
