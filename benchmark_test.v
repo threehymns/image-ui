@@ -76,6 +76,14 @@ fn test_benchmark_config_exposes_fixed_sample_and_cache_controls() {
 fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	path := os.join_path(os.temp_dir(), 'image-ui-live-trace-${os.getpid()}.tsv')
 	trace := [
+		'phase\t1000\t0\t0\t0\t0\tprocess_launch',
+		'phase\t2000\t0\t0\t1\t1000\twindow_creation',
+		'phase\t3000\t0\t0\t2\t2000\tfont_work',
+		'phase\t4000\t0\t0\t3\t3000\tui2_setup',
+		'phase\t5000\t0\t0\t4\t4000\tgpu_setup',
+		'phase\t16000\t0\t0\t5\t15000\tfirst_content',
+		'phase\t19500\t0\t0\t6\t18500\tdirectory_completion',
+		'phase\t21000\t0\t0\t7\t20000\tfirst_input',
 		'process_launch\t1000\t0\t0\t0\t0',
 		'first_content\t16000\t3840\t2160\t0\t15000',
 		'first_input\t21000\t3840\t2160\t0\t20000',
@@ -101,5 +109,10 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	assert summary.frame_median_ns == 16_667_000
 	assert summary.frame_p95_ns == 16_667_000
 	assert summary.frame_samples == 2
+	assert summary.phase_order == ['process_launch', 'window_creation', 'font_work', 'ui2_setup',
+		'gpu_setup', 'first_content', 'directory_completion', 'first_input']
+	assert summary.phase_monotonic
+	assert summary.phase_ns['window_creation'] == 1_000_000
+	assert summary.phase_ns['directory_completion'] == 18_500_000
 	assert summary.complete
 }

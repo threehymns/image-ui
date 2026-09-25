@@ -1,9 +1,12 @@
+@[has_globals]
 module main
 
 import os
 import time
 import sokol.sapp
 import ui2
+
+__global benchmark_process_launch_ns = u64(0)
 
 struct LiveTraceRow {
 pub:
@@ -36,6 +39,7 @@ pub mut:
 	enabled         bool
 	path            string
 	launch_us       i64
+	launch_mono_us  i64
 	last_frame_us   i64
 	last_width      int
 	last_height     int
@@ -50,6 +54,7 @@ pub mut:
 	pending_resize  bool
 	finished        bool
 	frames          []LiveFrameSample
+	phase_trace     StartupPhaseTrace
 }
 
 pub struct LiveTraceSummary {
@@ -68,12 +73,18 @@ pub mut:
 	viewport_height             int
 	checksum                    u64
 	complete                    bool
+	phase_ns                    map[string]i64
+	phase_order                 []string
+	phase_monotonic             bool = true
+	last_phase_us               i64 = -1
 }
 
 pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !LiveTraceSummary {
 	rows := os.read_lines(path) or { return err }
 	mut frames := []i64{}
-	mut summary := LiveTraceSummary{}
+	mut summary := LiveTraceSummary{
+		phase_ns: map[string]i64{}
+	}
 	mut checksum := u64(14695981039346656037)
 	mut resize_request_us := i64(0)
 	resize_path := path + '.resize_request_us'
@@ -101,6 +112,16 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 		checksum = benchmark_checksum_text(checksum, row.event)
 		checksum = benchmark_checksum_text(checksum, row.detail)
 		match row.event {
+			'phase' {
+				if row.detail.len > 0 {
+					summary.phase_ns[row.detail] = row.value_us * 1000
+					summary.phase_order << row.detail
+					if summary.last_phase_us >= 0 && row.at_us < summary.last_phase_us {
+						summary.phase_monotonic = false
+					}
+					summary.last_phase_us = row.at_us
+				}
+			}
 			'first_content' {
 				summary.process_to_first_content_ns = row.value_us * 1000
 			}
@@ -155,19 +176,19 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 
 pub fn new_benchmark_live_trace() BenchmarkLiveTrace {
 	path := os.getenv('IMAGE_UI_BENCHMARK_TRACE')
-	now := time.now().unix_micro()
+	launch_ns := if benchmark_process_launch_ns > 0 {
+		benchmark_process_launch_ns
+	} else {
+		time.sys_mono_now()
+	}
+	launch_mono_us := i64(launch_ns / 1000)
 	mut trace := BenchmarkLiveTrace{
-		path:          path
-		launch_us:     now
-		frame_target:  360
-		warmup_frames: 60
-	}
-	if path == '' {
-		return trace
-	}
-	requested_launch := os.getenv('IMAGE_UI_BENCHMARK_LAUNCH_US').i64()
-	if requested_launch > 0 {
-		trace.launch_us = requested_launch
+		path:           path
+		launch_us:      launch_mono_us
+		launch_mono_us: launch_mono_us
+		frame_target:   360
+		warmup_frames:  60
+		phase_trace:    new_startup_phase_trace(launch_ns)
 	}
 	trace.frame_target = os.getenv('IMAGE_UI_BENCHMARK_FRAME_TARGET').int()
 	if trace.frame_target < 2 {
@@ -177,8 +198,8 @@ pub fn new_benchmark_live_trace() BenchmarkLiveTrace {
 	if trace.warmup_frames < 0 || trace.warmup_frames >= trace.frame_target {
 		trace.warmup_frames = trace.frame_target / 6
 	}
-	trace.enabled = true
-	trace.write_event('process_launch', 0, 0, 0, now - trace.launch_us, '')
+	trace.enabled = path.len > 0
+	trace.mark_phase('process_launch', launch_ns)
 	return trace
 }
 
@@ -186,7 +207,7 @@ fn (mut trace BenchmarkLiveTrace) begin_frame(width int, height int) {
 	if !trace.enabled {
 		return
 	}
-	now := time.now().unix_micro()
+	now := i64(time.sys_mono_now() / 1000)
 	if trace.has_frame {
 		trace.pending_resize = trace.last_width != width || trace.last_height != height
 		trace.frames << LiveFrameSample{
@@ -203,26 +224,30 @@ fn (mut trace BenchmarkLiveTrace) begin_frame(width int, height int) {
 	trace.has_frame = true
 }
 
-fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool) {
+fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, content_ready bool) {
 	if !trace.enabled {
 		return
 	}
-	now := time.now().unix_micro()
+	now_mono_us := i64(time.sys_mono_now() / 1000)
 	trace.frame_count++
-	if !trace.has_content {
+	if content_ready && !trace.has_content {
 		trace.has_content = true
-		trace.write_event('first_content', trace.last_width, trace.last_height, trace.frame_count, now - trace.launch_us, '')
+		trace.mark_phase('first_content', u64(now_mono_us) * 1000)
+		trace.write_event('first_content', trace.last_width, trace.last_height, trace.frame_count,
+			now_mono_us - trace.launch_mono_us, '')
 	}
 	if trace.pending_resize {
 		trace.write_event('resize_observed', trace.last_width, trace.last_height, trace.frame_count, 0, '')
 		trace.pending_resize = false
 	}
 	for pending in trace.pending_actions {
-		trace.write_event('action_presented', trace.last_width, trace.last_height, trace.frame_count, now - pending.at_us, pending.action)
+		trace.write_event('action_presented', trace.last_width, trace.last_height, trace.frame_count,
+			now_mono_us - pending.at_us, pending.action)
 	}
 	trace.pending_actions.clear()
 	if scan_complete && !trace.has_scan {
 		trace.has_scan = true
+		trace.mark_phase('directory_completion', u64(now_mono_us) * 1000)
 		trace.write_event('scan_complete', trace.last_width, trace.last_height, trace.frame_count, 0, '')
 	}
 	if trace.frame_count >= trace.frame_target && !trace.finished {
@@ -240,14 +265,17 @@ fn (mut trace BenchmarkLiveTrace) on_key(code ui2.KeyCode) {
 		return
 	}
 	action := benchmark_key_action(code)
-	now := time.now().unix_micro()
+	now_mono_us := i64(time.sys_mono_now() / 1000)
 	if !trace.has_input {
 		trace.has_input = true
-		trace.write_event('first_input', trace.last_width, trace.last_height, trace.frame_count, now - trace.launch_us, action)
+		trace.mark_phase('first_input', u64(now_mono_us) * 1000)
+		trace.write_event('first_input', trace.last_width, trace.last_height, trace.frame_count,
+			now_mono_us - trace.launch_mono_us, action)
 	}
-	trace.write_event('input_key', trace.last_width, trace.last_height, trace.frame_count, now - trace.launch_us, action)
+	trace.write_event('input_key', trace.last_width, trace.last_height, trace.frame_count,
+		now_mono_us - trace.launch_mono_us, action)
 	if action != '' {
-		trace.pending_actions << LivePendingAction{ action: action, at_us: now }
+		trace.pending_actions << LivePendingAction{ action: action, at_us: now_mono_us }
 	}
 }
 
@@ -255,15 +283,36 @@ fn (mut trace BenchmarkLiveTrace) on_pointer(action string) {
 	if !trace.enabled {
 		return
 	}
-	now := time.now().unix_micro()
+	now_mono_us := i64(time.sys_mono_now() / 1000)
 	if !trace.has_input {
 		trace.has_input = true
-		trace.write_event('first_input', trace.last_width, trace.last_height, trace.frame_count, now - trace.launch_us, action)
+		trace.mark_phase('first_input', u64(now_mono_us) * 1000)
+		trace.write_event('first_input', trace.last_width, trace.last_height, trace.frame_count,
+			now_mono_us - trace.launch_mono_us, action)
 	}
-	trace.write_event('input_pointer', trace.last_width, trace.last_height, trace.frame_count, now - trace.launch_us, action)
+	trace.write_event('input_pointer', trace.last_width, trace.last_height, trace.frame_count,
+		now_mono_us - trace.launch_mono_us, action)
 	if action != '' {
-		trace.pending_actions << LivePendingAction{ action: action, at_us: now }
+		trace.pending_actions << LivePendingAction{ action: action, at_us: now_mono_us }
 	}
+}
+
+pub fn (mut trace BenchmarkLiveTrace) mark_phase(phase string, at_ns u64) {
+	if !trace.phase_trace.mark_at(phase, at_ns) {
+		return
+	}
+	if mark := trace.phase_trace.mark_for(phase) {
+		trace.write_phase_event(mark)
+	}
+}
+
+fn (mut trace BenchmarkLiveTrace) write_phase_event(mark StartupPhaseMark) {
+	if !trace.enabled || trace.path == '' {
+		return
+	}
+	mut file := os.open_append(trace.path) or { return }
+	file.writeln('phase\t${mark.elapsed_ns / 1000}\t0\t0\t${mark.order}\t${mark.elapsed_ns / 1000}\t${mark.phase}') or {}
+	file.close()
 }
 
 fn (mut trace BenchmarkLiveTrace) write_event(event string, width int, height int, order int, value i64, detail string) {

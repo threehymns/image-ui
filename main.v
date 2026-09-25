@@ -276,8 +276,7 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 		if displayed_path.len == 0 {
 			displayed_path = app.core.target_path
 		}
-		mut img_el := if displayed_resource.id.len > 0
-			&& displayed_resource.state == .ready {
+		mut img_el := if displayed_resource.id.len > 0 {
 			ui2.transformed_image_resource(
 				'viewport_image',
 				displayed_resource,
@@ -436,7 +435,8 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 		screen = ui2.screen(canvas_bg_hex, [frame_box])
 	}
 	$if viewer_benchmark ? {
-		app.benchmark_live.end_frame(app.core.active_sibling_path(), app.core.scan_complete)
+		app.benchmark_live.end_frame(app.core.active_sibling_path(), app.core.scan_complete,
+			app.core.has_image && app.core.displayed_resource.state == .ready)
 	}
 	return screen
 }
@@ -620,6 +620,13 @@ pub fn (mut app ViewerApp) handle_drop(e ui2.DropEvent) {
 
 const global_viewer_app = &ViewerApp{}
 
+$if viewer_benchmark ? {
+	fn handle_ui2_startup_phase(phase ui2.StartupPhase, at_ns u64) {
+		mut app := unsafe { global_viewer_app }
+		app.benchmark_live.mark_phase(ui2.startup_phase_name(phase), at_ns)
+	}
+}
+
 fn build_viewer_screen() ui2.Element {
 	mut app := unsafe { global_viewer_app }
 	return app.build_screen()
@@ -667,6 +674,7 @@ pub fn launch_viewer(image_path string) {
 	app.requested_window_h = 768
 	$if viewer_benchmark ? {
 		app.benchmark_live = new_benchmark_live_trace()
+		ui2.set_startup_phase_handler(handle_ui2_startup_phase)
 	}
 
 	ui2.on_key_event(handle_viewer_key)

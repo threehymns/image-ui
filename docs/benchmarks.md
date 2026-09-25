@@ -1,6 +1,6 @@
 # Viewer performance benchmarks
 
-The root benchmark suite measures the current Viewer before later image-resource, cache, and background-work changes land. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
+The root benchmark suite measures the current Viewer path, including the asynchronous image resource, background scanner, cached transparency tile, and startup phase trace. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
 
 ## Commands
 
@@ -70,6 +70,10 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 Every row includes warmup count, fixed iteration count, cache label, median, p95, and a returned-value checksum. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
 
+### Startup phase trace
+
+The headless suite also emits a phase-order smoke table with monotonic timestamps for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. It validates the ordering seam without claiming to measure a real process launch or GPU present. The live suite records the same phase names from the running Viewer process. Font discovery, metrics, and symbol fallback preparation are scheduled after context creation and run in the background; the first-content mark is emitted only after an image resource is ready and submitted by the renderer.
+
 ## Cache controls
 
 `--cache cold`, `--cache warm`, and `--cache both` select which screen-construction cases are run. The transparency background is a logical repeat tile and has no file cache.
@@ -89,7 +93,7 @@ The harness sends real Wayland key input through `wtype` and verifies each actio
 - `p` is available only in the benchmark build and calls the current `App.pan` path.
 - `z` is available only in the benchmark build and calls the current `App.zoom_in` path.
 
-The trace reports process launch to first content, process launch to the harness's first input, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, and a trace checksum.
+The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
 
 The cadence value is the interval between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame.
 
