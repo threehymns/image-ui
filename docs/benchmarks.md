@@ -72,7 +72,7 @@ Every row includes warmup count, fixed iteration count, cache label, median, p95
 
 ### Startup phase trace
 
-The headless suite also emits a phase-order smoke table with monotonic timestamps for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. It validates the ordering seam without claiming to measure a real process launch or GPU present. The live suite records the same phase names from the running Viewer process. Font discovery, metrics, and symbol fallback preparation are scheduled after context creation and run in the background; the first-content mark is emitted only after an image resource is ready and submitted by the renderer.
+The headless suite also emits a phase-order smoke table with monotonic timestamps for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. It validates the ordering seam without claiming to measure a real process launch or GPU present. The live suite records the same phase names from the running Viewer process. Font discovery, metrics, and symbol fallback preparation are scheduled after context creation and run in the background; the first-content mark is emitted only after an image resource is ready and the completed UI2 frame callback.
 
 ## Cache controls
 
@@ -150,20 +150,20 @@ The two process labels are separate launches, not cold and warm versions of a fi
 
 ### Startup phase evidence
 
-Recorded on 2026-09-25 from commit `d734f45` with `make benchmark-wayland` on niri, the available Intel Core i7-8565U / `i915` machine. Values are monotonic elapsed milliseconds from process launch at the phase mark. The font mark is the scheduling point for background font preparation; the first-content mark follows a ready decoded resource and renderer submission.
+Recorded on 2026-09-25 from commit `3abdad6` with `make benchmark-wayland` on niri, the available Intel Core i7-8565U / `i915` machine. Values are monotonic elapsed milliseconds from process launch at the phase mark. The font mark is the scheduling point for background font preparation; the first-content mark follows a ready decoded resource and the completed UI2 frame callback.
 
 | Phase | Cold process | Warm process |
 | --- | ---: | ---: |
 | Process launch | 0.00 | 0.00 |
-| Window creation | 114.48 | 456.28 |
-| Font work scheduled | 0.18 | 0.27 |
-| UI2 setup | 0.16 | 0.23 |
-| GPU setup | 114.53 | 456.34 |
-| First content | 1909.78 | 3987.29 |
-| First input | 2746.98 | 5846.55 |
-| Directory completion | 171.05 | 576.09 |
+| Window creation | 79.20 | 115.43 |
+| Font work scheduled | 0.10 | 0.14 |
+| UI2 setup | 0.09 | 0.12 |
+| GPU setup | 79.23 | 115.51 |
+| First content | 1764.56 | 1941.09 |
+| First input | 1933.09 | 2105.12 |
+| Directory completion | 129.92 | 181.83 |
 
-The observed order was `process_launch > ui2_setup > font_work > window_creation > gpu_setup > directory_completion > first_content > first_input` for both runs. The live checksum was `495817e7d9c03b89`; the measured viewport was 3840x2094. These are local timing samples, not a 10 ms, 4K, or post-present GPU guarantee.
+The observed order was `process_launch > ui2_setup > font_work > window_creation > gpu_setup > directory_completion > first_content > first_input` for both runs. The live checksum was `df304cfd721b348c`; the measured viewport was 3840x2094. These are local timing samples, not a 10 ms, 4K, or post-present GPU guarantee.
 
 ## Diagnostics versus repeatable results
 
