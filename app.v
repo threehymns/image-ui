@@ -277,17 +277,22 @@ pub fn (mut app App) integrate_batch(batch SiblingBatch) {
 	} else {
 		app.target_path
 	}
-	mut incoming := batch.items.clone()
-	natural_sort(mut incoming)
 	had_playlist := app.playlist.len > 0
-	app.playlist = merge_sorted_paths(app.playlist, incoming)
+	if batch.is_playlist_snapshot {
+		app.playlist = batch.items.clone()
+	} else {
+		mut incoming := batch.items.clone()
+		natural_sort(mut incoming)
+		app.playlist = merge_sorted_paths(app.playlist, incoming)
+	}
 	if batch.is_first_content || batch.is_neighborhood || !had_playlist {
 		app.has_first_content = true
 	}
 
+	active_name := if current_active != '' { os.file_name(current_active) } else { '' }
 	mut new_idx := -1
 	for i, p in app.playlist {
-		if p == current_active || (current_active != '' && os.file_name(p) == os.file_name(current_active)) {
+		if p == current_active || (active_name != '' && os.file_name(p) == active_name) {
 			new_idx = i
 			break
 		}

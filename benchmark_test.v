@@ -156,6 +156,24 @@ fn test_resident_switch_benchmark_reports_sibling_request_counters() {
 	assert sample.counters.coalesced == 0
 }
 
+fn test_playlist_snapshot_benchmark_integrates_20k_siblings() {
+	root := os.join_path(os.temp_dir(), 'image-ui-benchmark-playlist-${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	sample := execute_benchmark_operation(BenchmarkOperation{
+		kind:  .playlist_snapshot_20k
+		path:  root
+		cache: 'playlist-snapshot'
+	}, 0)
+	assert sample.checksum != 0
+	assert sample.counters.requested == 3
+	assert sample.counters.displayed == benchmark_playlist_snapshot_count
+	assert sample.counters.coalesced == scanner_neighborhood_radius + 1
+}
+
 fn test_integration_benchmark_rows_cover_transform_variants_and_invalidation() {
 	root := os.join_path(os.temp_dir(), 'image-ui-benchmark-integration-${os.getpid()}')
 	os.rmdir_all(root) or {}

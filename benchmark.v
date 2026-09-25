@@ -6,6 +6,7 @@ import ui2
 
 pub const benchmark_key_repeat_steps = 16
 pub const benchmark_fast_input_count = 100
+pub const benchmark_playlist_snapshot_count = 20000
 
 pub enum BenchmarkCacheSelection {
 	cold
@@ -205,6 +206,7 @@ pub enum BenchmarkOperationKind {
 	sibling_cache_4k_warm
 	sibling_discovery
 	sibling_navigation
+	playlist_snapshot_20k
 	resident_sibling_switch
 	resident_sibling_switch_4k
 	key_repeat_resident_right
@@ -254,6 +256,7 @@ fn benchmark_operation_name(kind BenchmarkOperationKind) string {
 		.sibling_cache_4k_warm { 'sibling_cache_4k_warm' }
 		.sibling_discovery { 'sibling_discovery' }
 		.sibling_navigation { 'sibling_navigation' }
+		.playlist_snapshot_20k { 'playlist_snapshot_20k' }
 		.resident_sibling_switch { 'resident_sibling_switch' }
 		.resident_sibling_switch_4k { 'resident_sibling_switch_4k' }
 		.key_repeat_resident_right { 'key_repeat_resident_right' }
@@ -504,6 +507,11 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		cache: 'no-app-cache'
 	})
 	runner.add(BenchmarkOperation{
+		kind:  .playlist_snapshot_20k
+		path:  fixtures.siblings
+		cache: 'playlist-snapshot'
+	})
+	runner.add(BenchmarkOperation{
 		kind:               .resident_sibling_switch
 		path:               fixtures.sibling(0)
 		secondary_path:     fixtures.sibling(1)
@@ -676,6 +684,8 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} large_alpha:${benchmark_large_width}x${benchmark_large_height} large_siblings:2 siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
 	println('cache_note=image rows have no application cache; sibling-lru rows use the full-resolution resource cache')
 	println('sibling_counter_note=requested/displayed/skipped/coalesced count user Sibling requests; prefetch columns count Neighborhood candidates and accepted cache insertions')
+	println('playlist_note=playlist_snapshot_20k drives the real scanner batch and App.integrate_batch contract over ${benchmark_playlist_snapshot_count} synthetic Sibling paths without touching the filesystem; its timer covers only UI-thread App.integrate_batch calls, while source enumeration and natural sort remain background scanner work; it reports throughput only and is not a timing gate')
+	println('playlist_counter_note=playlist_snapshot_20k maps requested to scanner batches handed to App.integrate_batch, displayed to the final playlist length, and coalesced to provisional entries replaced by the playlist snapshot')
 	println('cache_separation=Filmstrip Thumbnail Cache remains a separate cache and is not included in sibling-lru budget accounting')
 	println('pattern_note=the Viewer uses one 32x32 logical repeat tile; no full-window raster is generated')
 	println('measurement=screen rows build UI2 elements only and do not include GPU submission')
@@ -937,6 +947,9 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				checksum:   benchmark_resource_checksum(results[0].resource, results[0].request.path)
 				counters:   benchmark_pipeline_sample_counters(app.image_pipeline)
 			}
+		}
+		.playlist_snapshot_20k {
+			return execute_playlist_snapshot_benchmark(operation)
 		}
 		.pattern_tile {
 			mut stopwatch := time.new_stopwatch()
@@ -1233,6 +1246,64 @@ fn benchmark_sibling_paths(directory string) []string {
 	}
 	natural_sort(mut paths)
 	return paths
+}
+
+fn benchmark_playlist_snapshot_source(_ string) ![]string {
+	mut names := []string{cap: benchmark_playlist_snapshot_count}
+	for index in 1 .. benchmark_playlist_snapshot_count + 1 {
+		names << 'pic${index}.png'
+	}
+	return names
+}
+
+fn execute_playlist_snapshot_benchmark(operation BenchmarkOperation) BenchmarkSample {
+	mut app := new_app()
+	app.open_path(operation.path)
+	generation := app.scan_generation
+	app.begin_scan(generation)
+	ch := chan SiblingBatch{cap: 4}
+	cancel := chan bool{}
+	scan_directory_siblings_with_source_and_sorter(operation.path, '', generation, ch, cancel,
+		benchmark_playlist_snapshot_source, natural_sort)
+	mut batches := 0
+	mut snapshots := 0
+	mut coalesced := 0
+	mut integration_ns := i64(0)
+	for {
+		batch := <-ch
+		batches++
+		if batch.is_playlist_snapshot {
+			snapshots++
+			coalesced += app.playlist.len
+		}
+		if batches == 2 && app.playlist.len > 0 {
+			app.active_index = app.playlist.len / 2
+			app.target_path = app.playlist[app.active_index]
+		}
+		integration_started := time.sys_mono_now()
+		app.integrate_batch(batch)
+		integration_ns += i64(time.sys_mono_now() - integration_started)
+		if batch.is_last {
+			break
+		}
+	}
+	elapsed := integration_ns
+	mut checksum := benchmark_checksum_u64(0, u64(app.playlist.len))
+	checksum = benchmark_checksum_u64(checksum, u64(app.active_index))
+	checksum = benchmark_checksum_u64(checksum, u64(batches))
+	checksum = benchmark_checksum_u64(checksum, u64(snapshots))
+	checksum = benchmark_checksum_text(checksum, os.file_name(app.active_sibling_path()))
+	checksum = benchmark_checksum_text(checksum, os.file_name(app.playlist[0]))
+	checksum = benchmark_checksum_text(checksum, os.file_name(app.playlist[app.playlist.len - 1]))
+	return BenchmarkSample{
+		elapsed_ns: elapsed
+		checksum:   checksum
+		counters:   BenchmarkCounters{
+			requested: batches
+			displayed: app.playlist.len
+			coalesced: coalesced
+		}
+	}
 }
 
 fn benchmark_screen_app(path string, width int, height int) &ViewerApp {

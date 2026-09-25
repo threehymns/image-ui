@@ -1,7 +1,6 @@
 module main
 
 import os
-import math
 
 pub const supported_image_extensions = [
 	'.png',
@@ -17,16 +16,16 @@ pub const supported_image_extensions = [
 	'.pic',
 ]
 
-pub const scanner_batch_size = 50
 pub const scanner_neighborhood_radius = 50
 
 pub struct SiblingBatch {
 pub:
-	items            []string
-	is_neighborhood  bool
-	is_last          bool
-	generation       int
-	is_first_content bool
+	items                []string
+	is_neighborhood      bool
+	is_last              bool
+	generation           int
+	is_first_content     bool
+	is_playlist_snapshot bool
 }
 
 pub type SiblingDirectorySource = fn (string) ![]string
@@ -356,38 +355,15 @@ fn scan_directory_siblings_with_source_and_sorter(dir_path string, target_path s
 	}) {
 		return
 	}
-	mut sent := map[string]bool{}
-	for path in neighborhood_paths {
-		sent[path] = true
-	}
 	sorter(mut image_files)
-	mut remaining := []string{}
-	for path in image_files {
-		if path !in sent {
-			remaining << path
-		}
-	}
-	for start := 0; start < remaining.len; start += scanner_batch_size {
-		end := math.min(remaining.len, start + scanner_batch_size)
-		if !send_scan_batch(ch, cancel, SiblingBatch{
-			items:            remaining[start..end].clone()
-			is_neighborhood:  false
-			is_last:          end == remaining.len
-			generation:       generation
-			is_first_content: false
-		}) {
-			return
-		}
-	}
-	if remaining.len == 0 {
-		send_scan_batch(ch, cancel, SiblingBatch{
-			items:            []
-			is_neighborhood:  false
-			is_last:          true
-			generation:       generation
-			is_first_content: false
-		})
-	}
+	send_scan_batch(ch, cancel, SiblingBatch{
+		items:                image_files
+		is_neighborhood:      false
+		is_last:              true
+		generation:           generation
+		is_first_content:     false
+		is_playlist_snapshot: true
+	})
 }
 
 fn scan_directory_siblings_with_generation_and_cancel(dir_path string, target_path string,

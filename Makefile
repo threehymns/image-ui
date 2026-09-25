@@ -17,7 +17,7 @@ all: build
 # App test files, scoped explicitly: a bare `v test .` would also descend
 # into the ui2 submodule and run its whole suite (including platform-specific
 # tests that fail elsewhere).
-TEST_FILES ?= app_test.v benchmark_test.v checkerboard_test.v cli_test.v filter_test.v flip_test.v image_resource_test.v keys_test.v main_test.v pan_test.v scanner_test.v scroll_test.v sibling_cache_test.v startup_test.v viewport_test.v visual_regression_test.v
+TEST_FILES ?= app_test.v benchmark_test.v checkerboard_test.v cli_test.v filter_test.v flip_test.v image_resource_test.v keys_test.v main_test.v pan_test.v scanner_test.v scanner_playlist_test.v scroll_test.v sibling_cache_test.v startup_test.v viewport_test.v visual_regression_test.v
 
 build:
 	$(V) $(WAYLAND_FLAG) $(FLAGS) -o image-ui .

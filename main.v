@@ -9,6 +9,19 @@ import gg
 // Background for the canvas area outside the image
 pub const canvas_bg_hex = u32(0x141416)
 
+pub const scanner_poll_max_batches = 4
+pub const scanner_poll_budget_ns = 1000000
+
+pub fn scanner_poll_allows_batch(processed int, started_ns i64, now_ns i64) bool {
+	if processed >= scanner_poll_max_batches {
+		return false
+	}
+	if processed <= 0 {
+		return true
+	}
+	return now_ns - started_ns < scanner_poll_budget_ns
+}
+
 // Drop target frame and text styling colors
 pub const drop_target_border_hex = u32(0x34343a)
 pub const drop_target_text_hex = u32(0xa0a0a8)
@@ -69,7 +82,8 @@ pub fn (mut app ViewerApp) poll_scanner() {
 	}
 	mut received_any := false
 	mut count := 0
-	for count < 10 {
+	started := time.sys_mono_now()
+	for scanner_poll_allows_batch(count, started, time.sys_mono_now()) {
 		select {
 			batch := <-app.scanner_ch {
 				if !app.core.accepts_batch(batch) {
