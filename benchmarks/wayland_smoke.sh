@@ -35,6 +35,7 @@ trap cleanup EXIT INT TERM
 
 "$binary" --prepare-fixtures "$tmp/fixtures" >"$tmp/fixtures.log"
 target="$tmp/fixtures/large-4k.bmp"
+prefetch_target='large-4k_next.bmp'
 
 wait_for_trace() {
 	trace=$1
@@ -85,6 +86,7 @@ run_smoke() {
 	niri msg action focus-window --id "$window_id" >/dev/null
 	wait_for_trace "$trace" '^first_content'
 	wait_for_trace "$trace" '^scan_complete'
+	wait_for_trace "$trace" $'^prefetch_cached\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t0\t.*'"$prefetch_target"'$'
 	niri msg action focus-window --id "$window_id" >/dev/null
 	workspace_id=$(niri msg --json windows | jq -r --argjson id "$window_id" '.[] | select(.id == $id) | .workspace_id')
 	output_name=$(niri msg --json workspaces | jq -r --argjson id "$workspace_id" '.[] | select(.id == $id) | .output')

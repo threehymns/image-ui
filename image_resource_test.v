@@ -48,6 +48,34 @@ fn image_resource_test_path() string {
 	return os.join_path(os.temp_dir(), 'image-resource-test-${time.ticks()}.png')
 }
 
+fn image_resource_test_siblings(root string, count int) []string {
+	mut paths := []string{}
+	for index in 0 .. count {
+		path := os.join_path(root, 'sibling-${index:03d}.png')
+		os.write_file(path, 'fixture-${index}') or { panic(err) }
+		paths << path
+	}
+	return paths
+}
+
+fn image_resource_test_resident_viewer(paths []string, active_index int) &ViewerApp {
+	mut app := &ViewerApp{
+		core:           new_app()
+		image_pipeline: new_manual_image_pipeline()
+	}
+	app.core.playlist = paths.clone()
+	app.core.active_index = active_index
+	app.core.set_canvas_size(100, 100)
+	app.core.set_image_loaded(paths[active_index], 1, 1)
+	app.image_pipeline.set_resident(app.core.displayed_image_resource())
+	for path in paths {
+		signature := sibling_file_signature(path)
+		assert app.image_pipeline.cache.put(path, signature, image_resource_test_ready(path, 'resident-${path}'), 4, 4)
+	}
+	app.sync_sibling_cache_retention()
+	return app
+}
+
 fn image_resource_test_bmp() []u8 {
 	mut data := []u8{len: 58}
 	data[0] = `B`
@@ -291,8 +319,91 @@ fn test_pipeline_coalesces_rapid_input_to_one_queued_request() {
 	assert pipeline.queued_count() == 1
 	assert pipeline.pending_count() == 2
 	assert pipeline.metrics.max_pending <= 2
+	assert pipeline.metrics.skipped == 99
 	assert pipeline.metrics.coalesced == 99
 	assert pipeline.current_request().generation == 101
+}
+
+fn test_resident_right_key_repeat_displays_every_sibling_in_order() {
+	root := os.join_path(os.temp_dir(), 'image-ui-right-repeat-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	paths := image_resource_test_siblings(root, 6)
+	mut app := image_resource_test_resident_viewer(paths, 0)
+	for index in 1 .. paths.len {
+		app.handle_key_event(ui2.KeyEvent{ code: .right })
+		_ = app.build_screen_at_size(100, 100)
+		assert app.core.displayed_image_resource().source == paths[index]
+		assert app.core.active_index == index
+		assert app.image_pipeline.metrics.requested == index
+		assert app.image_pipeline.metrics.displayed == index
+		assert app.image_pipeline.metrics.skipped == 0
+		assert app.image_pipeline.metrics.coalesced == 0
+	}
+}
+
+fn test_resident_left_key_repeat_displays_every_sibling_in_order() {
+	root := os.join_path(os.temp_dir(), 'image-ui-left-repeat-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	paths := image_resource_test_siblings(root, 6)
+	mut app := image_resource_test_resident_viewer(paths, paths.len - 1)
+	for index in paths.len - 2 .. -1 {
+		app.handle_key_event(ui2.KeyEvent{ code: .left })
+		_ = app.build_screen_at_size(100, 100)
+		assert app.core.displayed_image_resource().source == paths[index]
+		assert app.core.active_index == index
+		assert app.image_pipeline.metrics.requested == paths.len - 1 - index
+		assert app.image_pipeline.metrics.displayed == paths.len - 1 - index
+		assert app.image_pipeline.metrics.skipped == 0
+		assert app.image_pipeline.metrics.coalesced == 0
+	}
+}
+
+fn test_key_repeat_faster_than_decode_stays_bounded_and_latest_request_wins() {
+	root := os.join_path(os.temp_dir(), 'image-ui-fast-repeat-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	paths := image_resource_test_siblings(root, 102)
+	mut app := &ViewerApp{
+		core:           new_app()
+		image_pipeline: new_manual_image_pipeline()
+	}
+	app.core.playlist = paths.clone()
+	app.core.active_index = 0
+	app.core.set_canvas_size(100, 100)
+	app.core.set_image_loaded(paths[0], 1, 1)
+	app.image_pipeline.set_resident(app.core.displayed_image_resource())
+
+	for index in 1 .. 101 {
+		app.handle_key_event(ui2.KeyEvent{ code: .right })
+	}
+
+	assert app.image_pipeline.metrics.requested == 100
+	assert app.image_pipeline.pending_count() == 2
+	assert app.image_pipeline.metrics.max_pending == 2
+	assert app.image_pipeline.prefetch_pending_count() <= 3
+	assert app.image_pipeline.prefetch_metrics.skipped <= app.image_pipeline.prefetch_metrics.requested
+	assert app.image_pipeline.metrics.max_total_pending <= 5
+	assert app.core.target_path == paths[100]
+	first := app.image_pipeline.active_request
+	assert first.path == paths[1]
+	assert app.image_pipeline.complete_active(image_resource_test_ready(first.path, 'stale'))
+	app.poll_image_pipeline()
+	latest := app.image_pipeline.active_request
+	assert latest.path == paths[100]
+	assert app.image_pipeline.complete_active(image_resource_test_ready(latest.path, 'latest'))
+	app.poll_image_pipeline()
+	assert app.core.displayed_image_resource().source == paths[100]
+	assert app.image_pipeline.metrics.displayed == 1
+	assert app.image_pipeline.metrics.skipped == 99
+	assert app.image_pipeline.metrics.coalesced == 98
 }
 
 fn test_sibling_failure_keeps_navigation_and_recovers() {

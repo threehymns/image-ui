@@ -116,6 +116,15 @@ mut:
 	signature SiblingFileSignature
 }
 
+pub struct SiblingNeighborhood {
+pub:
+	scan_generation int
+	direction       int
+	previous_path   string
+	current_path    string
+	next_path       string
+}
+
 pub struct ImagePipelineResult {
 pub:
 	request        ImageRequest
@@ -128,40 +137,75 @@ mut:
 
 pub struct ImagePipelineMetrics {
 pub mut:
+	requested         int
+	started           int
+	completed         int
+	accepted          int
+	committed         int
+	displayed         int
+	skipped           int
+	rejected          int
+	coalesced         int
+	resident_hits     int
+	cache_hits        int
+	cache_misses      int
+	failed            int
+	max_pending       int
+	max_total_pending int
+}
+
+pub struct ImagePrefetchMetrics {
+pub mut:
 	requested     int
 	started       int
 	completed     int
-	accepted      int
-	committed     int
-	rejected      int
+	prefetched    int
+	skipped       int
 	coalesced     int
+	cancelled     int
 	resident_hits int
 	cache_hits    int
 	cache_misses  int
-	failed        int
 	max_pending   int
 }
 
 pub struct ImagePipeline {
 pub mut:
-	decoder           ImageResourceDecoder = unsafe { nil }
-	result_ch         chan ImagePipelineResult
-	active_request    ImageRequest
-	has_active        bool
-	queued_request    ImageRequest
-	has_queued        bool
-	ready_request     ImageRequest
-	ready_resource    ui2.ImageResource
-	has_ready         bool
-	desired_request   ImageRequest
-	next_generation   int
-	resident_resource ui2.ImageResource
-	cache             SiblingResourceCache
-	nearby_paths      []string
-	neighbor_radius   int = default_sibling_cache_neighbor_radius
-	metrics           ImagePipelineMetrics
-	manual            bool
-	configured        bool
+	decoder                   ImageResourceDecoder = unsafe { nil }
+	result_ch                 chan ImagePipelineResult
+	active_request            ImageRequest
+	has_active                bool
+	queued_request            ImageRequest
+	has_queued                bool
+	ready_request             ImageRequest
+	ready_resource            ui2.ImageResource
+	has_ready                 bool
+	desired_request           ImageRequest
+	next_generation           int
+	resident_resource         ui2.ImageResource
+	cache                     SiblingResourceCache
+	nearby_paths              []string
+	prefetch_paths            []string
+	neighbor_radius           int = default_sibling_cache_neighbor_radius
+	prefetch_result_ch        chan ImagePipelineResult
+	prefetch_active_request   ImageRequest
+	has_prefetch_active       bool
+	prefetch_active_cancelled bool
+	prefetch_cancel           chan bool
+	has_prefetch_cancel       bool
+	prefetch_queued_request   ImageRequest
+	prefetch_queued_paths     []string
+	has_prefetch_queued       bool
+	prefetch_generation       int
+	prefetch_scan_generation  int
+	prefetch_direction        int
+	prefetch_context_valid    bool
+	last_prefetched_path      string
+	has_last_prefetched       bool
+	metrics                   ImagePipelineMetrics
+	prefetch_metrics          ImagePrefetchMetrics
+	manual                    bool
+	configured                bool
 }
 
 pub fn new_image_pipeline(decoder ImageResourceDecoder) ImagePipeline {
@@ -170,10 +214,11 @@ pub fn new_image_pipeline(decoder ImageResourceDecoder) ImagePipeline {
 
 pub fn new_image_pipeline_with_cache(decoder ImageResourceDecoder, budget_bytes int) ImagePipeline {
 	return ImagePipeline{
-		decoder:    decoder
-		result_ch:  chan ImagePipelineResult{cap: 1}
-		cache:      new_sibling_resource_cache(budget_bytes)
-		configured: true
+		decoder:            decoder
+		result_ch:          chan ImagePipelineResult{cap: 1}
+		prefetch_result_ch: chan ImagePipelineResult{cap: 1}
+		cache:              new_sibling_resource_cache(budget_bytes)
+		configured:         true
 	}
 }
 
@@ -226,10 +271,69 @@ fn image_pipeline_worker(request ImageRequest, decoder ImageResourceDecoder, res
 	}
 }
 
+fn image_prefetch_worker(request ImageRequest, decoder ImageResourceDecoder, result_ch chan ImagePipelineResult, cancel chan bool) {
+	mut canceled := false
+	select {
+		<-cancel {
+			canceled = true
+		}
+		else {
+		}
+	}
+	mut resource := ui2.error_image_resource('image-resource-${request.generation}', request.path,
+		'prefetch cancelled')
+	mut signature := request.signature
+	mut cpu_bytes := 0
+	mut renderer_bytes := 0
+	if !canceled && voidptr(decoder) != unsafe { nil } {
+		before := sibling_file_signature(request.path)
+		decoded := decoder(request.path) or {
+			result_ch <- ImagePipelineResult{
+				request:   request
+				resource:  ui2.error_image_resource('image-resource-${request.generation}', request.path, err.msg())
+				signature: signature
+			}
+			return
+		}
+		after := sibling_file_signature(request.path)
+		if before.exists && after != before {
+			result_ch <- ImagePipelineResult{
+				request:   request
+				resource:  ui2.error_image_resource('image-resource-${request.generation}', request.path, 'image file changed during decode')
+				signature: after
+			}
+			return
+		}
+		signature = if after.exists { after } else { before }
+		cpu_bytes = decoded.pixels.len
+		resource = image_resource_from_decoded('image-resource-${request.generation}', request.path, decoded)
+		renderer_bytes = if decoded.renderer_bytes > 0 {
+			decoded.renderer_bytes
+		} else {
+			image_resource_renderer_bytes(resource)
+		}
+	}
+	result_ch <- ImagePipelineResult{
+		request:        request
+		resource:       resource
+		signature:      signature
+		cpu_bytes:      cpu_bytes
+		renderer_bytes: renderer_bytes
+	}
+}
+
 fn (mut pipeline ImagePipeline) update_pending_metrics() {
 	pending := pipeline.pending_count()
 	if pending > pipeline.metrics.max_pending {
 		pipeline.metrics.max_pending = pending
+	}
+	prefetch_pending := pipeline.prefetch_pending_count()
+	if prefetch_pending > pipeline.prefetch_metrics.max_pending {
+		pipeline.prefetch_metrics.max_pending = prefetch_pending
+	}
+	total := pending + prefetch_pending
+	if total > pipeline.metrics.max_total_pending {
+		pipeline.metrics.max_total_pending = total
 	}
 }
 
@@ -242,6 +346,14 @@ pub fn (pipeline &ImagePipeline) pending_count() int {
 		count++
 	}
 	if pipeline.has_ready {
+		count++
+	}
+	return count
+}
+
+pub fn (pipeline &ImagePipeline) prefetch_pending_count() int {
+	mut count := pipeline.prefetch_queued_paths.len
+	if pipeline.has_prefetch_active {
 		count++
 	}
 	return count
@@ -266,25 +378,34 @@ pub fn (mut pipeline ImagePipeline) set_nearby_paths(paths []string) {
 }
 
 pub fn (mut pipeline ImagePipeline) update_retention() {
-	mut paths := pipeline.nearby_paths.clone()
+	mut nearby := pipeline.nearby_paths.clone()
+	for path in pipeline.prefetch_paths {
+		if path !in nearby {
+			nearby << path
+		}
+	}
+	mut required := []string{}
 	if pipeline.has_active {
-		paths << pipeline.active_request.path
+		required << pipeline.active_request.path
 	}
 	if pipeline.has_queued {
-		paths << pipeline.queued_request.path
+		required << pipeline.queued_request.path
 	}
 	if pipeline.has_ready {
-		paths << pipeline.ready_request.path
+		required << pipeline.ready_request.path
 	}
 	if pipeline.desired_request.path != '' {
-		paths << pipeline.desired_request.path
+		required << pipeline.desired_request.path
 	}
 	current_path := if pipeline.resident_resource.state == .ready {
 		pipeline.resident_resource.source
 	} else {
 		''
 	}
-	pipeline.cache.set_retention(current_path, paths)
+	if current_path != '' {
+		required << current_path
+	}
+	pipeline.cache.set_requirements(current_path, required, nearby)
 }
 
 fn (mut pipeline ImagePipeline) cache_lookup(path string, signature SiblingFileSignature) ?ui2.ImageResource {
@@ -294,6 +415,175 @@ fn (mut pipeline ImagePipeline) cache_lookup(path string, signature SiblingFileS
 	pipeline.metrics.cache_hits += pipeline.cache.metrics.hits - before_hits
 	pipeline.metrics.cache_misses += pipeline.cache.metrics.misses - before_misses
 	return resource
+}
+
+fn (pipeline &ImagePipeline) user_path_has_priority(path string) bool {
+	if path == '' {
+		return false
+	}
+	if pipeline.has_active && pipeline.active_request.path == path {
+		return true
+	}
+	if pipeline.has_queued && pipeline.queued_request.path == path {
+		return true
+	}
+	if pipeline.has_ready && pipeline.ready_request.path == path {
+		return true
+	}
+	if pipeline.desired_request.path == path {
+		return true
+	}
+	return pipeline.resident_resource.state == .ready && pipeline.resident_resource.source == path
+}
+
+fn (mut pipeline ImagePipeline) sync_prefetch_queue_state() {
+	if pipeline.prefetch_queued_paths.len == 0 {
+		pipeline.has_prefetch_queued = false
+		pipeline.prefetch_queued_request = ImageRequest{}
+		return
+	}
+	pipeline.has_prefetch_queued = true
+	pipeline.prefetch_queued_request = ImageRequest{
+		generation: 0
+		path:       pipeline.prefetch_queued_paths[0]
+		reason:     'prefetch'
+		signature:  sibling_file_signature(pipeline.prefetch_queued_paths[0])
+	}
+}
+
+fn (mut pipeline ImagePipeline) cancel_prefetch(replaced bool) {
+	pipeline.prefetch_generation++
+	pipeline.prefetch_context_valid = false
+	pipeline.prefetch_paths = []string{}
+	if pipeline.has_prefetch_active && !pipeline.prefetch_active_cancelled {
+		pipeline.prefetch_metrics.skipped++
+		pipeline.prefetch_metrics.cancelled++
+		pipeline.prefetch_active_cancelled = true
+	}
+	if pipeline.has_prefetch_cancel {
+		pipeline.prefetch_cancel.close()
+		pipeline.has_prefetch_cancel = false
+	}
+	queued_count := pipeline.prefetch_queued_paths.len
+	for _ in 0 .. queued_count {
+		pipeline.prefetch_metrics.skipped++
+		pipeline.prefetch_metrics.cancelled++
+	}
+	if replaced {
+		pipeline.prefetch_metrics.coalesced += queued_count
+	}
+	pipeline.prefetch_queued_paths = []string{}
+	pipeline.sync_prefetch_queue_state()
+	pipeline.update_retention()
+	pipeline.update_pending_metrics()
+}
+
+fn (mut pipeline ImagePipeline) enqueue_prefetch_path(path string) {
+	if path == '' || path in pipeline.prefetch_queued_paths || pipeline.user_path_has_priority(path) {
+		pipeline.prefetch_metrics.skipped++
+		return
+	}
+	pipeline.prefetch_queued_paths << path
+	pipeline.sync_prefetch_queue_state()
+}
+
+fn (mut pipeline ImagePipeline) pump_prefetch() {
+	for pipeline.has_prefetch_queued && !pipeline.has_prefetch_active {
+		path := pipeline.prefetch_queued_paths[0]
+		pipeline.prefetch_queued_paths.delete(0)
+		pipeline.sync_prefetch_queue_state()
+		if pipeline.user_path_has_priority(path) {
+			pipeline.prefetch_metrics.skipped++
+			continue
+		}
+		signature := sibling_file_signature(path)
+		if !signature.exists {
+			pipeline.prefetch_metrics.skipped++
+			continue
+		}
+		before_hits := pipeline.cache.metrics.hits
+		before_misses := pipeline.cache.metrics.misses
+		if _ := pipeline.cache.get(path, signature) {
+			pipeline.prefetch_metrics.cache_hits += pipeline.cache.metrics.hits - before_hits
+			pipeline.prefetch_metrics.cache_misses += pipeline.cache.metrics.misses - before_misses
+			pipeline.prefetch_metrics.resident_hits++
+			pipeline.prefetch_metrics.skipped++
+			continue
+		}
+		pipeline.prefetch_metrics.cache_hits += pipeline.cache.metrics.hits - before_hits
+		pipeline.prefetch_metrics.cache_misses += pipeline.cache.metrics.misses - before_misses
+		pipeline.prefetch_generation++
+		pipeline.prefetch_active_request = ImageRequest{
+			generation: pipeline.prefetch_generation
+			path:       path
+			reason:     'prefetch'
+			signature:  signature
+		}
+		pipeline.has_prefetch_active = true
+		pipeline.prefetch_active_cancelled = false
+		pipeline.prefetch_metrics.started++
+		if voidptr(pipeline.decoder) == unsafe { nil } {
+			pipeline.manual = true
+		} else if !pipeline.manual {
+			pipeline.prefetch_cancel = chan bool{}
+			pipeline.has_prefetch_cancel = true
+			spawn image_prefetch_worker(pipeline.prefetch_active_request, pipeline.decoder,
+				pipeline.prefetch_result_ch, pipeline.prefetch_cancel)
+		}
+		break
+	}
+	pipeline.update_retention()
+	pipeline.update_pending_metrics()
+}
+
+pub fn (mut pipeline ImagePipeline) set_prefetch_neighborhood(neighborhood SiblingNeighborhood) {
+	if neighborhood.scan_generation < pipeline.prefetch_scan_generation {
+		return
+	}
+	mut candidates := []string{}
+	if neighborhood.direction < 0 {
+		candidates << neighborhood.current_path
+		candidates << neighborhood.previous_path
+		candidates << neighborhood.next_path
+	} else {
+		candidates << neighborhood.current_path
+		candidates << neighborhood.next_path
+		candidates << neighborhood.previous_path
+	}
+	mut unique := []string{}
+	for path in candidates {
+		if path != '' && path !in unique {
+			unique << path
+		}
+	}
+	if pipeline.prefetch_context_valid
+		&& pipeline.prefetch_scan_generation == neighborhood.scan_generation
+		&& pipeline.prefetch_direction == neighborhood.direction
+		&& pipeline.prefetch_paths == unique {
+		return
+	}
+	if pipeline.prefetch_context_valid {
+		pipeline.cancel_prefetch(true)
+	}
+	pipeline.prefetch_scan_generation = neighborhood.scan_generation
+	pipeline.prefetch_direction = neighborhood.direction
+	pipeline.prefetch_context_valid = true
+	pipeline.prefetch_paths = unique.clone()
+	for path in unique {
+		pipeline.prefetch_metrics.requested++
+		pipeline.enqueue_prefetch_path(path)
+	}
+	pipeline.pump_prefetch()
+}
+
+pub fn (mut pipeline ImagePipeline) take_prefetched_path() string {
+	if !pipeline.has_last_prefetched {
+		return ''
+	}
+	path := pipeline.last_prefetched_path
+	pipeline.last_prefetched_path = ''
+	pipeline.has_last_prefetched = false
+	return path
 }
 
 fn (mut pipeline ImagePipeline) dispatch(request ImageRequest) {
@@ -313,6 +603,7 @@ fn (mut pipeline ImagePipeline) dispatch(request ImageRequest) {
 fn (mut pipeline ImagePipeline) queue(request ImageRequest) {
 	if pipeline.has_queued {
 		pipeline.metrics.coalesced++
+		pipeline.metrics.skipped++
 	}
 	pipeline.queued_request = request
 	pipeline.has_queued = true
@@ -347,6 +638,7 @@ pub fn (mut pipeline ImagePipeline) request(path string, reason string) ImageReq
 }
 
 pub fn (mut pipeline ImagePipeline) request_with_generation(path string, reason string, generation int) ImageRequest {
+	pipeline.cancel_prefetch(false)
 	if generation > pipeline.next_generation {
 		pipeline.next_generation = generation
 	}
@@ -371,6 +663,7 @@ pub fn (mut pipeline ImagePipeline) request_with_generation(path string, reason 
 			pipeline.queue(request)
 		} else if pipeline.has_ready {
 			pipeline.metrics.coalesced++
+			pipeline.metrics.skipped++
 			pipeline.ready_request = request
 		} else {
 			pipeline.ready_request = request
@@ -392,11 +685,15 @@ pub fn (mut pipeline ImagePipeline) request_with_generation(path string, reason 
 }
 
 pub fn (mut pipeline ImagePipeline) cancel() {
+	pipeline.cancel_prefetch(false)
 	pipeline.next_generation++
 	pipeline.desired_request = ImageRequest{
 		generation: pipeline.next_generation
 		path:       ''
 		reason:     'cancel'
+	}
+	if pipeline.has_queued {
+		pipeline.metrics.skipped++
 	}
 	pipeline.has_queued = false
 	pipeline.has_ready = false
@@ -408,6 +705,7 @@ pub fn (mut pipeline ImagePipeline) cancel() {
 pub fn (mut pipeline ImagePipeline) set_resident(resource ui2.ImageResource) {
 	if resource.state == .ready {
 		pipeline.resident_resource = resource
+		pipeline.update_retention()
 		signature := sibling_file_signature(resource.source)
 		if signature.exists && resource.id.len > 0 && resource.decoded_pixels().len > 0
 			&& !pipeline.cache.contains(resource.source) {
@@ -461,9 +759,46 @@ pub fn (mut pipeline ImagePipeline) fail_active(generation int, path string, mes
 	return true
 }
 
+pub fn (mut pipeline ImagePipeline) complete_prefetch_active(resource ui2.ImageResource) bool {
+	if !pipeline.has_prefetch_active {
+		return false
+	}
+	result := ImagePipelineResult{
+		request:        pipeline.prefetch_active_request
+		resource:       resource
+		signature:      sibling_file_signature(pipeline.prefetch_active_request.path)
+		cpu_bytes:      resource.decoded_pixels().len
+		renderer_bytes: image_resource_renderer_bytes(resource)
+	}
+	mut sent := false
+	select {
+		pipeline.prefetch_result_ch <- result {
+			sent = true
+		}
+		else {
+		}
+	}
+	return sent
+}
+
+pub fn (mut pipeline ImagePipeline) complete_prefetch(generation int, path string,
+	resource ui2.ImageResource) bool {
+	if !pipeline.has_prefetch_active || pipeline.prefetch_active_request.generation != generation
+		|| pipeline.prefetch_active_request.path != path {
+		return false
+	}
+	return pipeline.complete_prefetch_active(resource)
+}
+
 pub fn (mut pipeline ImagePipeline) mark_committed(request ImageRequest) {
 	if request.generation == pipeline.desired_request.generation && request.path == pipeline.desired_request.path {
 		pipeline.metrics.committed++
+	}
+}
+
+pub fn (mut pipeline ImagePipeline) mark_displayed(request ImageRequest) {
+	if request.generation == pipeline.desired_request.generation && request.path == pipeline.desired_request.path {
+		pipeline.metrics.displayed++
 	}
 }
 
@@ -489,6 +824,7 @@ fn (mut pipeline ImagePipeline) collect_ready(mut accepted []ImagePipelineResult
 		}
 	} else {
 		pipeline.metrics.rejected++
+		pipeline.metrics.skipped++
 	}
 	pipeline.update_retention()
 	return accepted
@@ -505,6 +841,7 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 				if !pipeline.has_active || result.request.generation != pipeline.active_request.generation
 					|| result.request.path != pipeline.active_request.path {
 					pipeline.metrics.rejected++
+					pipeline.metrics.skipped++
 					continue
 				}
 				pipeline.has_active = false
@@ -537,6 +874,7 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 					}
 				} else {
 					pipeline.metrics.rejected++
+					pipeline.metrics.skipped++
 				}
 				pipeline.update_retention()
 				if pipeline.has_queued {
@@ -552,6 +890,55 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 		pipeline.pump_queued()
 	}
 	accepted = pipeline.collect_ready(mut accepted)
+	mut prefetch_drained := 0
+	for prefetch_drained < 4 {
+		select {
+			result := <-pipeline.prefetch_result_ch {
+				prefetch_drained++
+				if !pipeline.has_prefetch_active
+					|| result.request.generation != pipeline.prefetch_active_request.generation
+					|| result.request.path != pipeline.prefetch_active_request.path {
+					continue
+				}
+				pipeline.has_prefetch_active = false
+				pipeline.prefetch_active_cancelled = false
+				pipeline.has_prefetch_cancel = false
+				pipeline.prefetch_metrics.completed++
+				mut normalized := result
+				if normalized.resource.state == .ready {
+					current_signature := sibling_file_signature(normalized.request.path)
+					if normalized.signature.exists && current_signature != normalized.signature {
+						normalized.resource = ui2.error_image_resource('image-resource-${normalized.request.generation}', normalized.request.path,
+							'image file changed during decode')
+						normalized.signature = current_signature
+					}
+				}
+				context_current := pipeline.prefetch_context_valid
+					&& normalized.request.generation == pipeline.prefetch_generation
+					&& normalized.request.path in pipeline.prefetch_paths
+				if context_current && normalized.resource.state == .ready {
+					if pipeline.cache.put(normalized.request.path, normalized.signature,
+						normalized.resource, normalized.cpu_bytes, normalized.renderer_bytes) {
+						pipeline.prefetch_metrics.prefetched++
+						pipeline.last_prefetched_path = normalized.request.path
+						pipeline.has_last_prefetched = true
+					} else {
+						pipeline.prefetch_metrics.skipped++
+					}
+				} else if context_current {
+					pipeline.prefetch_metrics.skipped++
+				}
+				pipeline.update_retention()
+				pipeline.pump_prefetch()
+			}
+			else {
+				break
+			}
+		}
+	}
+	if pipeline.has_prefetch_queued && !pipeline.has_prefetch_active {
+		pipeline.pump_prefetch()
+	}
 	pipeline.update_pending_metrics()
 	return accepted
 }

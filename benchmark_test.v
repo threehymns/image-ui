@@ -23,6 +23,8 @@ fn test_benchmark_fixture_generation_is_deterministic_and_decodable() {
 	assert os.exists(fixtures.alpha)
 	assert os.exists(fixtures.opaque)
 	assert os.exists(fixtures.large_4k)
+	assert os.exists(fixtures.large_sibling_previous)
+	assert os.exists(fixtures.large_sibling_next)
 	assert os.file_name(fixtures.alpha) == 'alpha.tga'
 	assert os.file_name(fixtures.opaque) == 'opaque.bmp'
 	assert os.file_name(fixtures.large_4k) == 'large-4k.bmp'
@@ -61,6 +63,29 @@ fn test_viewer_screen_can_be_built_at_explicit_size() {
 	assert screen.children[0].background.pattern.pixel_height < 2160
 	assert app.core.canvas_w == 3840
 	assert app.core.canvas_h == 2160
+}
+
+fn test_resident_switch_benchmark_reports_sibling_request_counters() {
+	root := os.join_path(os.temp_dir(), 'image-ui-benchmark-switch-${os.getpid()}')
+	os.rmdir_all(root) or {}
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	fixtures := generate_benchmark_fixtures(root, 4) or { panic(err) }
+	sample := execute_benchmark_operation(BenchmarkOperation{
+		kind:               'resident_sibling_switch'
+		path:               fixtures.sibling(0)
+		secondary_path:     fixtures.sibling(1)
+		width:              1024
+		height:             768
+		cache:              'sibling-lru-resident'
+		cache_budget_bytes: 1024 * 1024
+	}, 0)
+	assert sample.checksum != 0
+	assert sample.requested == 1
+	assert sample.displayed == 1
+	assert sample.skipped == 0
+	assert sample.coalesced == 0
 }
 
 fn test_benchmark_config_exposes_fixed_sample_and_cache_controls() {
@@ -102,6 +127,8 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 		'first_input\t21000\t3840\t2160\t0\t20000',
 		'input_key\t21000\t3840\t2160\t1\t10000',
 		'action_presented\t22667\t3840\t2160\t2\t1667\ttoggle',
+		'prefetch_cached\t22000\t3840\t2160\t1\t0\tneighbor.bmp',
+		'pipeline_counters\t89335\t2560\t1440\t6\t2\tdisplayed:2,skipped:0,coalesced:0,prefetch_requested:3,prefetched:1,prefetch_skipped:2,prefetch_coalesced:0',
 		'frame_interval\t22667\t3840\t2160\t3\t16667',
 		'frame_interval\t39334\t3840\t2160\t4\t16667',
 		'resize_observed\t56001\t2560\t1440\t5\t0',
@@ -116,6 +143,12 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	assert summary.process_to_first_content_ns == 15_000_000
 	assert summary.process_to_first_input_ns == 20_000_000
 	assert summary.toggle_to_frame_ns == 1_667_000
+	assert summary.prefetch_cached == 1
+	assert summary.requested == 2
+	assert summary.displayed == 2
+	assert summary.prefetch_requested == 3
+	assert summary.prefetched == 1
+	assert summary.prefetch_skipped == 2
 	assert summary.resize_to_frame_ns == 0
 	assert summary.viewport_width == 2560
 	assert summary.viewport_height == 1440
