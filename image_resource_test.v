@@ -290,6 +290,7 @@ fn test_pipeline_worker_decodes_off_coordinator() {
 	results := pipeline.poll()
 	assert results.len == 1
 	assert results[0].resource.source == request.path
+	assert pipeline.metrics.decode_count == 1
 }
 
 fn test_pipeline_rejects_stale_completion_and_keeps_latest_request() {

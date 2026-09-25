@@ -210,7 +210,7 @@ pub fn (mut app ViewerApp) poll_image_pipeline() {
 		if prefetched_path.len > 0 {
 			app.benchmark_live.on_prefetch(prefetched_path)
 		}
-		app.benchmark_live.on_pipeline(app.image_pipeline.metrics, app.image_pipeline.prefetch_metrics)
+		app.benchmark_live.on_pipeline(app.image_pipeline.metrics, app.image_pipeline.prefetch_metrics, app.image_pipeline.cache.metrics)
 	}
 	app.sync_sibling_cache_retention()
 }

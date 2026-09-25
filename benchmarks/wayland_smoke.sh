@@ -36,6 +36,10 @@ trap cleanup EXIT INT TERM
 "$binary" --prepare-fixtures "$tmp/fixtures" >"$tmp/fixtures.log"
 target="$tmp/fixtures/large-4k.bmp"
 prefetch_target='large-4k_next.bmp'
+repeat_keys=${IMAGE_UI_BENCHMARK_REPEAT_KEYS:-8}
+if (( repeat_keys < 1 )); then
+	repeat_keys=8
+fi
 
 wait_for_trace() {
 	trace=$1
@@ -65,6 +69,7 @@ run_smoke() {
 	IMAGE_UI_BENCHMARK_LAUNCH_US="$launch_us" \
 	IMAGE_UI_BENCHMARK_FRAME_TARGET=360 \
 	IMAGE_UI_BENCHMARK_WARMUP_FRAMES=60 \
+	IMAGE_UI_BENCHMARK_REPEAT_KEYS="$repeat_keys" \
 		"$binary" --wayland-smoke "$target" >"$log" 2>&1 &
 	pid=$!
 	window_id=
@@ -107,6 +112,16 @@ run_smoke() {
 	sleep 0.2
 	niri msg action focus-window --id "$window_id" >/dev/null
 	wtype -k Right
+	for _ in $(seq 1 $((repeat_keys - 1))); do
+		niri msg action focus-window --id "$window_id" >/dev/null
+		wtype -k Right
+		sleep 0.03
+		niri msg action focus-window --id "$window_id" >/dev/null
+		wtype -k Left
+		sleep 0.03
+	done
+	niri msg action focus-window --id "$window_id" >/dev/null
+	wtype -k Left
 	if ! wait "$pid"; then
 		printf 'Wayland smoke failed: benchmark process failed\n' >&2
 		cat "$log" >&2

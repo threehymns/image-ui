@@ -24,53 +24,69 @@ pub mut:
 
 pub struct BenchmarkSample {
 pub:
-	elapsed_ns         i64
-	checksum           u64
-	requested          int
-	displayed          int
-	skipped            int
-	coalesced          int
-	prefetch_requested int
-	prefetched         int
-	prefetch_skipped   int
-	prefetch_coalesced int
-	max_pending        int
-	max_total_pending  int
-	cache_hits         int
-	cache_misses       int
-	cache_updates      int
-	cache_evictions    int
-	cache_bytes        int
-	cache_budget       int
+	elapsed_ns           i64
+	checksum             u64
+	requested            int
+	displayed            int
+	skipped              int
+	coalesced            int
+	prefetch_requested   int
+	prefetched           int
+	prefetch_skipped     int
+	prefetch_coalesced   int
+	prefetch_cancelled   int
+	prefetch_decodes     int
+	decode_count         int
+	max_pending          int
+	max_total_pending    int
+	cache_hits           int
+	cache_misses         int
+	cache_updates        int
+	cache_evictions      int
+	cache_invalidations  int
+	cache_bytes          int
+	cache_peak_bytes     int
+	cache_cpu_bytes      int
+	cache_renderer_bytes int
+	cache_budget         int
 }
 
 pub struct BenchmarkResult {
 pub:
-	name               string
-	fixture            string
-	cache              string
-	warmup             int
-	iterations         int
-	median_ns          i64
-	p95_ns             i64
-	checksum           u64
-	verified           bool
-	requested          int
-	displayed          int
-	skipped            int
-	coalesced          int
-	prefetch_requested int
-	prefetched         int
-	prefetch_skipped   int
-	prefetch_coalesced int
-	max_pending        int
-	max_total_pending  int
-	cache_hits         int
-	cache_misses       int
-	cache_updates      int
-	cache_evictions    int
-	cache_bytes        int
-	cache_budget       int
+	name                 string
+	fixture              string
+	cache                string
+	warmup               int
+	iterations           int
+	median_ns            i64
+	p95_ns               i64
+	checksum             u64
+	verified             bool
+	checksum_samples     int
+	checksum_mismatches  int
+	requested            int
+	displayed            int
+	skipped              int
+	coalesced            int
+	prefetch_requested   int
+	prefetched           int
+	prefetch_skipped     int
+	prefetch_coalesced   int
+	prefetch_cancelled   int
+	prefetch_decodes     int
+	decode_count         int
+	max_pending          int
+	max_total_pending    int
+	cache_hits           int
+	cache_misses         int
+	cache_updates        int
+	cache_evictions      int
+	cache_invalidations  int
+	cache_bytes          int
+	cache_peak_bytes     int
+	cache_cpu_bytes      int
+	cache_renderer_bytes int
+	cache_budget         int
 }
 
 struct BenchmarkOperation {
@@ -260,6 +276,14 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	}
 	if config.cache == .cold || config.cache == .both {
 		runner.add(BenchmarkOperation{
+			kind:               'sibling_cache_invalidation'
+			path:               fixtures.opaque
+			cache:              'sibling-lru-invalidation'
+			cache_budget_bytes: 64 * 1024
+		})
+	}
+	if config.cache == .cold || config.cache == .both {
+		runner.add(BenchmarkOperation{
 			kind:               'sibling_cache_4k_cold'
 			path:               fixtures.large_4k
 			cache:              'sibling-lru'
@@ -321,6 +345,24 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 		cache_budget_bytes: 4 * 1024 * 1024
 	})
 	runner.add(BenchmarkOperation{
+		kind:               'sustained_key_repeat_right'
+		path:               fixtures.sibling(0)
+		secondary_path:     fixtures.sibling(benchmark_key_repeat_steps)
+		width:              1024
+		height:             768
+		cache:              'sustained-sibling-lru-resident'
+		cache_budget_bytes: 4 * 1024 * 1024
+	})
+	runner.add(BenchmarkOperation{
+		kind:               'sustained_key_repeat_left'
+		path:               fixtures.sibling(benchmark_key_repeat_steps)
+		secondary_path:     fixtures.sibling(0)
+		width:              1024
+		height:             768
+		cache:              'sustained-sibling-lru-resident'
+		cache_budget_bytes: 4 * 1024 * 1024
+	})
+	runner.add(BenchmarkOperation{
 		kind:               'key_repeat_faster_than_decode'
 		path:               fixtures.sibling(0)
 		secondary_path:     fixtures.sibling(benchmark_fast_input_count)
@@ -336,6 +378,40 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	runner.add(BenchmarkOperation{
 		kind:   'frame_prepare_4k'
 		path:   fixtures.large_4k
+		width:  benchmark_large_width
+		height: benchmark_large_height
+		cache:  'pattern-resource'
+	})
+	for operation in [
+		BenchmarkOperation{
+			kind:   'pan_4k_transparent'
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'pattern-resource'
+		},
+		BenchmarkOperation{
+			kind:   'pan_4k_opaque'
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'opaque-resource'
+		},
+		BenchmarkOperation{
+			kind:   'zoom_4k_transparent'
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'pattern-resource'
+		},
+		BenchmarkOperation{
+			kind:   'zoom_4k_opaque'
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'opaque-resource'
+		},
+	] {
+		runner.add(operation)
+	}
+	runner.add(BenchmarkOperation{
+		kind:   'toggle_checkerboard_4k'
 		width:  benchmark_large_width
 		height: benchmark_large_height
 		cache:  'pattern-resource'
@@ -357,11 +433,11 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 			cache:  'pattern-resource'
 		})
 		runner.add(BenchmarkOperation{
-			kind:   'startup_cpu'
+			kind:   'startup_cpu_cold'
 			path:   fixtures.large_4k
 			width:  1024
 			height: 768
-			cache:  'pattern-resource'
+			cache:  'startup-cold'
 		})
 	}
 	if config.cache == .warm || config.cache == .both {
@@ -373,11 +449,11 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 			cache:  'pattern-resource'
 		})
 		runner.add(BenchmarkOperation{
-			kind:   'startup_cpu'
+			kind:   'startup_cpu_warm'
 			path:   fixtures.large_4k
 			width:  1024
 			height: 768
-			cache:  'pattern-resource'
+			cache:  'startup-warm'
 		})
 	}
 
@@ -396,12 +472,14 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	println('cache_separation=Filmstrip Thumbnail Cache remains a separate cache and is not included in sibling-lru budget accounting')
 	println('pattern_note=the Viewer uses one 32x32 logical repeat tile; no full-window raster is generated')
 	println('measurement=screen rows build UI2 elements only and do not include GPU submission')
-	println('| case | fixture | cache | budget bytes | warmup | iterations | median ms | p95 ms | requested | displayed | skipped | coalesced | prefetch requested | prefetched | prefetch skipped | prefetch coalesced | max pending | max total pending | hits | misses | updates | evictions | resident bytes | checksum | status |')
-	println('| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |')
+	println('decode_note=decodes count full decoder invocations; cache hits and prefetched resources do not decode again')
+	println('fixed_iteration_note=every row runs the configured warmup count and exactly the configured measured iteration count; each measured checksum and counter set is checked')
+	println('| case | fixture | cache | budget bytes | warmup | iterations | median ms | p95 ms | decodes | prefetch decodes | requested | displayed | skipped | coalesced | prefetch requested | prefetched | prefetch skipped | prefetch coalesced | prefetch cancelled | max pending | max total pending | hits | misses | updates | evictions | invalidations | resident bytes | peak bytes | cpu bytes | renderer bytes | checksum | checksum samples | checksum mismatches | status |')
+	println('| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |')
 	mut verified := true
 	for result in runner.results {
-		status := if result.verified { 'ok' } else { 'checksum-mismatch' }
-		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.cache_budget} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.requested} | ${result.displayed} | ${result.skipped} | ${result.coalesced} | ${result.prefetch_requested} | ${result.prefetched} | ${result.prefetch_skipped} | ${result.prefetch_coalesced} | ${result.max_pending} | ${result.max_total_pending} | ${result.cache_hits} | ${result.cache_misses} | ${result.cache_updates} | ${result.cache_evictions} | ${result.cache_bytes} | ${result.checksum.hex()} | ${status} |')
+		status := if result.verified { 'ok' } else { 'checksum-or-counter-mismatch' }
+		println('| ${result.name} | ${os.file_name(result.fixture)} | ${result.cache} | ${result.cache_budget} | ${result.warmup} | ${result.iterations} | ${benchmark_ms(result.median_ns)} | ${benchmark_ms(result.p95_ns)} | ${result.decode_count} | ${result.prefetch_decodes} | ${result.requested} | ${result.displayed} | ${result.skipped} | ${result.coalesced} | ${result.prefetch_requested} | ${result.prefetched} | ${result.prefetch_skipped} | ${result.prefetch_coalesced} | ${result.prefetch_cancelled} | ${result.max_pending} | ${result.max_total_pending} | ${result.cache_hits} | ${result.cache_misses} | ${result.cache_updates} | ${result.cache_evictions} | ${result.cache_invalidations} | ${result.cache_bytes} | ${result.cache_peak_bytes} | ${result.cache_cpu_bytes} | ${result.cache_renderer_bytes} | ${result.checksum.hex()} | ${result.checksum_samples} | ${result.checksum_mismatches} | ${status} |')
 		verified = verified && result.verified
 	}
 	print_headless_startup_phases()
@@ -419,7 +497,9 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 	}
 	mut samples := []i64{}
 	mut expected := u64(0)
+	mut expected_observation := ''
 	mut verified := true
+	mut checksum_mismatches := 0
 	mut sample_requested := 0
 	mut sample_displayed := 0
 	mut sample_skipped := 0
@@ -428,17 +508,26 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 	mut sample_prefetched := 0
 	mut sample_prefetch_skipped := 0
 	mut sample_prefetch_coalesced := 0
+	mut sample_prefetch_cancelled := 0
+	mut sample_prefetch_decodes := 0
+	mut sample_decode_count := 0
 	mut sample_max_pending := 0
 	mut sample_max_total_pending := 0
 	mut sample_cache_hits := 0
 	mut sample_cache_misses := 0
 	mut sample_cache_updates := 0
 	mut sample_cache_evictions := 0
+	mut sample_cache_invalidations := 0
 	mut sample_cache_bytes := 0
+	mut sample_cache_peak_bytes := 0
+	mut sample_cache_cpu_bytes := 0
+	mut sample_cache_renderer_bytes := 0
 	for iteration in 0 .. runner.config.iterations {
 		sample := execute_benchmark_operation(operation, iteration)
+		observation := benchmark_sample_observation(sample)
 		if iteration == 0 {
 			expected = sample.checksum
+			expected_observation = observation
 			sample_requested = sample.requested
 			sample_displayed = sample.displayed
 			sample_skipped = sample.skipped
@@ -447,15 +536,27 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 			sample_prefetched = sample.prefetched
 			sample_prefetch_skipped = sample.prefetch_skipped
 			sample_prefetch_coalesced = sample.prefetch_coalesced
+			sample_prefetch_cancelled = sample.prefetch_cancelled
+			sample_prefetch_decodes = sample.prefetch_decodes
+			sample_decode_count = sample.decode_count
 			sample_max_pending = sample.max_pending
 			sample_max_total_pending = sample.max_total_pending
 			sample_cache_hits = sample.cache_hits
 			sample_cache_misses = sample.cache_misses
 			sample_cache_updates = sample.cache_updates
 			sample_cache_evictions = sample.cache_evictions
+			sample_cache_invalidations = sample.cache_invalidations
 			sample_cache_bytes = sample.cache_bytes
-		} else if sample.checksum != expected {
-			verified = false
+			sample_cache_peak_bytes = sample.cache_peak_bytes
+			sample_cache_cpu_bytes = sample.cache_cpu_bytes
+			sample_cache_renderer_bytes = sample.cache_renderer_bytes
+		} else {
+			if sample.checksum != expected {
+				checksum_mismatches++
+			}
+			if observation != expected_observation {
+				verified = false
+			}
 		}
 		samples << sample.elapsed_ns
 	}
@@ -466,32 +567,89 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 		operation.path
 	}
 	runner.results << BenchmarkResult{
-		name:               operation.kind
-		fixture:            fixture
-		cache:              operation.cache
-		warmup:             runner.config.warmup
-		iterations:         runner.config.iterations
-		median_ns:          stats.median_ns
-		p95_ns:             stats.p95_ns
-		checksum:           expected
-		verified:           verified
-		requested:          sample_requested
-		displayed:          sample_displayed
-		skipped:            sample_skipped
-		coalesced:          sample_coalesced
-		prefetch_requested: sample_prefetch_requested
-		prefetched:         sample_prefetched
-		prefetch_skipped:   sample_prefetch_skipped
-		prefetch_coalesced: sample_prefetch_coalesced
-		max_pending:        sample_max_pending
-		max_total_pending:  sample_max_total_pending
-		cache_hits:         sample_cache_hits
-		cache_misses:       sample_cache_misses
-		cache_updates:      sample_cache_updates
-		cache_evictions:    sample_cache_evictions
-		cache_bytes:        sample_cache_bytes
-		cache_budget:       operation.cache_budget_bytes
+		name:                 operation.kind
+		fixture:              fixture
+		cache:                operation.cache
+		warmup:               runner.config.warmup
+		iterations:           runner.config.iterations
+		median_ns:            stats.median_ns
+		p95_ns:               stats.p95_ns
+		checksum:             expected
+		verified:             verified && checksum_mismatches == 0
+		checksum_samples:     runner.config.iterations
+		checksum_mismatches:  checksum_mismatches
+		requested:            sample_requested
+		displayed:            sample_displayed
+		skipped:              sample_skipped
+		coalesced:            sample_coalesced
+		prefetch_requested:   sample_prefetch_requested
+		prefetched:           sample_prefetched
+		prefetch_skipped:     sample_prefetch_skipped
+		prefetch_coalesced:   sample_prefetch_coalesced
+		prefetch_cancelled:   sample_prefetch_cancelled
+		prefetch_decodes:     sample_prefetch_decodes
+		decode_count:         sample_decode_count
+		max_pending:          sample_max_pending
+		max_total_pending:    sample_max_total_pending
+		cache_hits:           sample_cache_hits
+		cache_misses:         sample_cache_misses
+		cache_updates:        sample_cache_updates
+		cache_evictions:      sample_cache_evictions
+		cache_invalidations:  sample_cache_invalidations
+		cache_bytes:          sample_cache_bytes
+		cache_peak_bytes:     sample_cache_peak_bytes
+		cache_cpu_bytes:      sample_cache_cpu_bytes
+		cache_renderer_bytes: sample_cache_renderer_bytes
+		cache_budget:         operation.cache_budget_bytes
 	}
+}
+
+fn benchmark_sample_observation(sample BenchmarkSample) string {
+	return '${sample.checksum}:${sample.requested}:${sample.displayed}:${sample.skipped}:${sample.coalesced}:${sample.prefetch_requested}:${sample.prefetched}:${sample.prefetch_skipped}:${sample.prefetch_coalesced}:${sample.prefetch_cancelled}:${sample.prefetch_decodes}:${sample.decode_count}:${sample.max_pending}:${sample.max_total_pending}:${sample.cache_hits}:${sample.cache_misses}:${sample.cache_updates}:${sample.cache_evictions}:${sample.cache_invalidations}:${sample.cache_bytes}:${sample.cache_peak_bytes}:${sample.cache_cpu_bytes}:${sample.cache_renderer_bytes}'
+}
+
+fn benchmark_frame_app(width int, height int, opacity ui2.ImageOpacity) &ViewerApp {
+	mut app := &ViewerApp{
+		core:               new_app()
+		window_ready:       true
+		requested_window_w: width
+		requested_window_h: height
+	}
+	app.core.set_canvas_size(width, height)
+	app.core.set_image_resource(benchmark_ready_resource_with_opacity('frame-fixture', width, height, opacity))
+	return app
+}
+
+fn execute_frame_transform_benchmark(operation BenchmarkOperation) BenchmarkSample {
+	opacity := if operation.kind.contains('opaque') {
+		ui2.ImageOpacity.proven_opaque
+	} else {
+		ui2.ImageOpacity.has_alpha
+	}
+	mut app := benchmark_frame_app(operation.width, operation.height, opacity)
+	app.core.zoom_in()
+	mut stopwatch := time.new_stopwatch()
+	if operation.kind.starts_with('pan') {
+		app.core.pan(17.0, 13.0)
+	} else {
+		app.core.zoom_in()
+	}
+	screen := app.build_screen_at_size(operation.width, operation.height)
+	elapsed := stopwatch.elapsed().nanoseconds()
+	mut checksum := benchmark_checksum_text(0, '${screen.id}:${screen.children}:${app.core.viewport.x}:${app.core.viewport.y}:${app.core.viewport.scale}')
+	checksum = benchmark_checksum_u64(checksum, u64(app.core.transparency_background_visible()))
+	return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
+}
+
+fn execute_toggle_benchmark(operation BenchmarkOperation) BenchmarkSample {
+	mut app := benchmark_frame_app(operation.width, operation.height, .has_alpha)
+	_ = app.build_screen_at_size(operation.width, operation.height)
+	mut stopwatch := time.new_stopwatch()
+	app.core.toggle_checkerboard()
+	screen := app.build_screen_at_size(operation.width, operation.height)
+	elapsed := stopwatch.elapsed().nanoseconds()
+	checksum := benchmark_checksum_text(0, '${screen.id}:${screen.children}:${app.core.show_checkerboard}')
+	return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
 }
 
 fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) BenchmarkSample {
@@ -499,8 +657,15 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 		'resident_sibling_switch', 'resident_sibling_switch_4k' {
 			return execute_resident_sibling_switch(operation)
 		}
-		'key_repeat_resident_right', 'key_repeat_resident_left' {
+		'key_repeat_resident_right', 'key_repeat_resident_left',
+		'sustained_key_repeat_right', 'sustained_key_repeat_left' {
 			return execute_resident_key_repeat(operation)
+		}
+		'pan_4k_transparent', 'pan_4k_opaque', 'zoom_4k_transparent', 'zoom_4k_opaque' {
+			return execute_frame_transform_benchmark(operation)
+		}
+		'toggle_checkerboard_4k' {
+			return execute_toggle_benchmark(operation)
 		}
 		'key_repeat_faster_than_decode' {
 			return execute_fast_key_repeat(operation)
@@ -514,7 +679,7 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 			checksum = benchmark_checksum_u64(checksum, u64(metadata.height))
 			checksum = benchmark_checksum_u64(checksum, u64(metadata.source_bytes))
 			checksum = benchmark_checksum_u64(checksum, u64(metadata.original_channels))
-			return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
+			return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum, decode_count: 1 }
 		}
 		'sibling_discovery' {
 			ch := chan SiblingBatch{cap: 8}
@@ -542,8 +707,9 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 			elapsed := stopwatch.elapsed().nanoseconds()
 			app.core.set_image_loaded(app.core.target_path, metadata.width, metadata.height)
 			return BenchmarkSample{
-				elapsed_ns: elapsed
-				checksum:   benchmark_checksum_u64(benchmark_checksum_u64(0, u64(metadata.width)), u64(metadata.height))
+				elapsed_ns:   elapsed
+				checksum:     benchmark_checksum_u64(benchmark_checksum_u64(0, u64(metadata.width)), u64(metadata.height))
+				decode_count: 1
 			}
 		}
 		'pattern_tile' {
@@ -555,12 +721,30 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				checksum:   benchmark_checksum(pattern.pixels)
 			}
 		}
-		'sibling_cache_cold', 'sibling_cache_warm', 'sibling_cache_4k_cold', 'sibling_cache_4k_warm' {
+		'sibling_cache_cold', 'sibling_cache_warm', 'sibling_cache_4k_cold', 'sibling_cache_4k_warm',
+		'sibling_cache_invalidation' {
 			mut cache := new_sibling_resource_cache(operation.cache_budget_bytes)
 			mut checksum := u64(0)
+			mut decode_count := 0
 			mut elapsed := i64(0)
-			if operation.kind == 'sibling_cache_warm' || operation.kind == 'sibling_cache_4k_warm' {
+			if operation.kind == 'sibling_cache_invalidation' {
 				decoded := decode_stbi_image(operation.path) or { panic(err) }
+				decode_count = 1
+				resource := image_resource_from_decoded('benchmark-invalidation', operation.path, decoded)
+				signature := sibling_file_signature(operation.path)
+				assert cache.put(operation.path, signature, resource, decoded.pixels.len, decoded.renderer_bytes)
+				changed := SiblingFileSignature{
+					exists:        signature.exists
+					size:          signature.size
+					modified_unix: signature.modified_unix + 1
+				}
+				mut stopwatch := time.new_stopwatch()
+				invalidated := cache.get(operation.path, changed) != none
+				elapsed = stopwatch.elapsed().nanoseconds()
+				checksum = benchmark_checksum_u64(benchmark_checksum_u64(0, u64(decoded.width)), u64(invalidated))
+			} else if operation.kind == 'sibling_cache_warm' || operation.kind == 'sibling_cache_4k_warm' {
+				decoded := decode_stbi_image(operation.path) or { panic(err) }
+				decode_count = 1
 				resource := image_resource_from_decoded('benchmark-cache', operation.path, decoded)
 				signature := sibling_file_signature(operation.path)
 				cache.put(operation.path, signature, resource, decoded.pixels.len, decoded.renderer_bytes)
@@ -577,6 +761,7 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				mut stopwatch := time.new_stopwatch()
 				signature := sibling_file_signature(operation.path)
 				decoded := decode_stbi_image(operation.path) or { panic(err) }
+				decode_count = 1
 				resource := image_resource_from_decoded('benchmark-cache', operation.path, decoded)
 				accepted := cache.put(operation.path, signature, resource, decoded.pixels.len, decoded.renderer_bytes)
 				elapsed = stopwatch.elapsed().nanoseconds()
@@ -585,18 +770,24 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				checksum = benchmark_checksum_u64(checksum, u64(accepted))
 			}
 			return BenchmarkSample{
-				elapsed_ns:      elapsed
-				checksum:        checksum
-				cache_hits:      cache.metrics.hits
-				cache_misses:    cache.metrics.misses
-				cache_updates:   cache.metrics.updates
-				cache_evictions: cache.metrics.evictions
-				cache_bytes:     cache.metrics.resident_bytes
-				cache_budget:    operation.cache_budget_bytes
+				elapsed_ns:           elapsed
+				checksum:             checksum
+				decode_count:         decode_count
+				cache_hits:           cache.metrics.hits
+				cache_misses:         cache.metrics.misses
+				cache_updates:        cache.metrics.updates
+				cache_evictions:      cache.metrics.evictions
+				cache_invalidations:  cache.metrics.invalidations
+				cache_bytes:          cache.metrics.resident_bytes
+				cache_peak_bytes:     cache.metrics.peak_bytes
+				cache_cpu_bytes:      cache.metrics.cpu_bytes
+				cache_renderer_bytes: cache.metrics.renderer_bytes
+				cache_budget:         operation.cache_budget_bytes
 			}
 		}
-		'screen_construct_4k', 'screen_resize_to_4k', 'frame_prepare_4k', 'startup_cpu' {
-			if operation.kind == 'startup_cpu' {
+		'screen_construct_4k', 'screen_resize_to_4k', 'frame_prepare_4k', 'startup_cpu',
+		'startup_cpu_cold', 'startup_cpu_warm' {
+			if operation.kind.starts_with('startup_cpu') {
 				mut stopwatch := time.new_stopwatch()
 				mut app := new_app()
 				metadata := load_image_metadata(operation.path) or { panic(err) }
@@ -607,7 +798,7 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 				mut checksum := benchmark_checksum_text(0, '${screen.id}:${screen.children}')
 				checksum = benchmark_checksum_u64(checksum, u64(metadata.width))
 				checksum = benchmark_checksum_u64(checksum, u64(metadata.height))
-				return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum }
+				return BenchmarkSample{ elapsed_ns: elapsed, checksum: checksum, decode_count: 1 }
 			}
 			mut app := benchmark_screen_app(operation.path, operation.width, operation.height)
 			if operation.kind == 'screen_resize_to_4k' {
@@ -646,35 +837,47 @@ fn execute_benchmark_operation(operation BenchmarkOperation, iteration int) Benc
 }
 
 fn benchmark_ready_resource(path string, width int, height int) ui2.ImageResource {
+	return benchmark_ready_resource_with_opacity(path, width, height, .proven_opaque)
+}
+
+fn benchmark_ready_resource_with_opacity(path string, width int, height int, opacity ui2.ImageOpacity) ui2.ImageResource {
 	pixel_bytes := width * height * 4
 	return ui2.ready_image_resource('benchmark-${path}', path, ui2.ImageResourceInput{
 		width:    width
 		height:   height
 		channels: 4
 		pixels:   []u8{len: pixel_bytes, init: 255}
-	}, .proven_opaque)
+	}, opacity)
 }
 
 fn benchmark_pipeline_sample(elapsed_ns i64, checksum u64, app &ViewerApp) BenchmarkSample {
+	cache_metrics := app.image_pipeline.cache.metrics
 	return BenchmarkSample{
-		elapsed_ns:         elapsed_ns
-		checksum:           checksum
-		requested:          app.image_pipeline.metrics.requested
-		displayed:          app.image_pipeline.metrics.displayed
-		skipped:            app.image_pipeline.metrics.skipped
-		coalesced:          app.image_pipeline.metrics.coalesced
-		prefetch_requested: app.image_pipeline.prefetch_metrics.requested
-		prefetched:         app.image_pipeline.prefetch_metrics.prefetched
-		prefetch_skipped:   app.image_pipeline.prefetch_metrics.skipped
-		prefetch_coalesced: app.image_pipeline.prefetch_metrics.coalesced
-		max_pending:        app.image_pipeline.metrics.max_pending
-		max_total_pending:  app.image_pipeline.metrics.max_total_pending
-		cache_hits:         app.image_pipeline.cache.metrics.hits
-		cache_misses:       app.image_pipeline.cache.metrics.misses
-		cache_updates:      app.image_pipeline.cache.metrics.updates
-		cache_evictions:    app.image_pipeline.cache.metrics.evictions
-		cache_bytes:        app.image_pipeline.cache.metrics.resident_bytes
-		cache_budget:       app.image_pipeline.cache.budget_bytes
+		elapsed_ns:           elapsed_ns
+		checksum:             checksum
+		decode_count:         app.image_pipeline.metrics.decode_count
+		prefetch_decodes:     app.image_pipeline.prefetch_metrics.decode_count
+		requested:            app.image_pipeline.metrics.requested
+		displayed:            app.image_pipeline.metrics.displayed
+		skipped:              app.image_pipeline.metrics.skipped
+		coalesced:            app.image_pipeline.metrics.coalesced
+		prefetch_requested:   app.image_pipeline.prefetch_metrics.requested
+		prefetched:           app.image_pipeline.prefetch_metrics.prefetched
+		prefetch_skipped:     app.image_pipeline.prefetch_metrics.skipped
+		prefetch_coalesced:   app.image_pipeline.prefetch_metrics.coalesced
+		prefetch_cancelled:   app.image_pipeline.prefetch_metrics.cancelled
+		max_pending:          app.image_pipeline.metrics.max_pending
+		max_total_pending:    app.image_pipeline.metrics.max_total_pending
+		cache_hits:           cache_metrics.hits
+		cache_misses:         cache_metrics.misses
+		cache_updates:        cache_metrics.updates
+		cache_evictions:      cache_metrics.evictions
+		cache_invalidations:  cache_metrics.invalidations
+		cache_bytes:          cache_metrics.resident_bytes
+		cache_peak_bytes:     cache_metrics.peak_bytes
+		cache_cpu_bytes:      cache_metrics.cpu_bytes
+		cache_renderer_bytes: cache_metrics.renderer_bytes
+		cache_budget:         app.image_pipeline.cache.budget_bytes
 	}
 }
 
@@ -741,7 +944,7 @@ fn benchmark_resident_repeat_app(operation BenchmarkOperation, right bool) &View
 }
 
 fn execute_resident_key_repeat(operation BenchmarkOperation) BenchmarkSample {
-	right := operation.kind == 'key_repeat_resident_right'
+	right := operation.kind == 'key_repeat_resident_right' || operation.kind == 'sustained_key_repeat_right'
 	mut app := benchmark_resident_repeat_app(operation, right)
 	mut checksum := u64(0)
 	mut stopwatch := time.new_stopwatch()
@@ -887,6 +1090,13 @@ fn run_wayland_smoke(target string) ! {
 	if summary.resize_to_frame_ns < 0 || summary.frame_samples == 0 {
 		return error('live trace lacks resize or frame cadence samples')
 	}
+	mut repeat_target := os.getenv('IMAGE_UI_BENCHMARK_REPEAT_KEYS').int()
+	if repeat_target <= 0 {
+		repeat_target = 8
+	}
+	if summary.left_input_count < repeat_target || summary.right_input_count < repeat_target {
+		return error('live trace lacks sustained Left/Right input counters')
+	}
 	build := benchmark_build_info()
 	hardware := benchmark_hardware_info()
 	print_benchmark('Viewer live Wayland smoke')
@@ -895,8 +1105,11 @@ fn run_wayland_smoke(target string) ! {
 	println('compile_flags=${build.compile_flag}')
 	println('hardware=${hardware.os_name} ${hardware.architecture} cpu=${hardware.cpu_model} logical_cpus=${hardware.logical_cpus} memory=${hardware.memory} gpu_driver=${hardware.gpu_driver}')
 	println('cache=${os.getenv('IMAGE_UI_BENCHMARK_CACHE')} target=${target}')
-	println('config=warmup_frames:${warmup_frames} frame_target:${frame_target} measured_frames:${summary.frame_samples}')
+	println('config=warmup_frames:${warmup_frames} frame_target:${frame_target} measured_frames:${summary.frame_samples} repeat_keys_each_direction:${repeat_target}')
 	println('measured_viewport=${summary.viewport_width}x${summary.viewport_height}')
+	println('viewport_exact_3840x2160=${summary.viewport_width == benchmark_large_width && summary.viewport_height == benchmark_large_height}')
+	println('post_present_fence=unavailable')
+	println('target_4k60=not_proven_without_exact_viewport_and_post_present_fence')
 	println('startup_phase_order=${summary.phase_order.join('>')}')
 	for phase in startup_phase_names {
 		println('startup_phase=${phase} elapsed_ms=${benchmark_ms(summary.phase_ns[phase] or { 0 })}')
@@ -906,7 +1119,11 @@ fn run_wayland_smoke(target string) ! {
 	println('toggle_to_frame_ms=${benchmark_ms(summary.toggle_to_frame_ns)}')
 	println('switch_to_frame_ms=${benchmark_ms(summary.switch_to_frame_ns)}')
 	println('sibling_requested=${summary.requested} sibling_displayed=${summary.displayed} sibling_skipped=${summary.skipped} sibling_coalesced=${summary.coalesced}')
-	println('prefetch_requested=${summary.prefetch_requested} prefetched=${summary.prefetched} prefetch_skipped=${summary.prefetch_skipped} prefetch_coalesced=${summary.prefetch_coalesced} prefetch_cached_events=${summary.prefetch_cached}')
+	println('decode_count=${summary.decode_count} prefetch_decode_count=${summary.prefetch_decodes}')
+	println('cache_hits=${summary.cache_hits} cache_misses=${summary.cache_misses} cache_updates=${summary.cache_updates} cache_evictions=${summary.cache_evictions} cache_invalidations=${summary.cache_invalidations}')
+	println('cache_resident_bytes=${summary.cache_resident_bytes} cache_peak_bytes=${summary.cache_peak_bytes} cache_cpu_bytes=${summary.cache_cpu_bytes} cache_renderer_bytes=${summary.cache_renderer_bytes} cache_budget=${summary.cache_budget}')
+	println('prefetch_requested=${summary.prefetch_requested} prefetched=${summary.prefetched} prefetch_skipped=${summary.prefetch_skipped} prefetch_coalesced=${summary.prefetch_coalesced} prefetch_cancelled=${summary.prefetch_cancelled} prefetch_cached_events=${summary.prefetch_cached}')
+	println('repeat_left_input=${summary.left_input_count} repeat_right_input=${summary.right_input_count}')
 	println('pan_to_frame_ms=${benchmark_ms(summary.pan_to_frame_ns)}')
 	println('zoom_to_frame_ms=${benchmark_ms(summary.zoom_to_frame_ns)}')
 	println('resize_to_frame_ms=${benchmark_ms(summary.resize_to_frame_ns)}')

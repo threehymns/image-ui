@@ -8,5 +8,5 @@ The filmstrip maintains a bounded LRU cache (capped at 100 entries / ~20MB) of d
 
 ## Consequences
 - Constant, deterministic memory footprint even in directories containing 10,000+ RAW/JPEG photos.
-- Smooth 60 FPS scrolling of the filmstrip.
+- Smooth scrolling is a target; 60 FPS has not been measured by the root Viewer benchmark.
 - Cache misses during rapid scrolling show a lightweight placeholder until the worker downsamples the target thumbnail.

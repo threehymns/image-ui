@@ -1,6 +1,6 @@
 # Viewer performance benchmarks
 
-The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, Neighborhood prefetch, deterministic key-repeat simulations, and startup phase tracing. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
+The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, Neighborhood prefetch, deterministic key-repeat simulations, startup phase tracing, and separate transparent/opaque 3840x2160 pan and zoom rows. Every row reports fixed warmup/iteration counts, a returned-value checksum, decode counts, cache accounting, prefetch behavior, and counter checks. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
 
 ## Commands
 
@@ -37,7 +37,16 @@ Run the live smoke on niri:
 make benchmark-wayland
 ```
 
-The live command needs a Wayland socket plus `niri`, `jq`, and `wtype`. It exits with a clear skipped message when those requirements are absent. The script restores the previously focused window on exit.
+The live command needs a Wayland socket plus `niri`, `jq`, and `wtype`. It exits with a clear skipped message when those requirements are absent. The script restores the previously focused window on exit and sends a deterministic sustained Left/Right sequence; `IMAGE_UI_BENCHMARK_REPEAT_KEYS` controls the number of keys in each direction.
+
+Native contract commands for the matching host are:
+
+```bash
+./benchmarks/native_contract_check.sh --commands
+./benchmarks/native_contract_check.sh
+```
+
+On Linux the runner executes Linux checks and explicitly does not claim AppKit, UIKit, or Windows visual runs.
 
 ## Fixtures
 
@@ -60,24 +69,29 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 | Case | What the timer covers |
 | --- | --- |
-| `image_load_alpha`, `image_load_opaque`, `image_load_4k` | File read, `stbi` metadata decode, and decode free through the production `load_image_metadata` seam |
+| `image_load_alpha`, `image_load_opaque`, `image_load_4k` | File read, `stbi` metadata decode, and decode free through the production `load_image_metadata` seam; each row reports one decoder invocation |
 | `sibling_cache_cold`, `sibling_cache_warm` | Full-resolution decode, signature capture, cache insertion, and resident lookup at the selected byte budget |
 | `sibling_cache_4k_cold`, `sibling_cache_4k_warm` | The same cache path with the 4K fixture and a 256 MiB budget |
+| `sibling_cache_invalidation` | A changed file signature removes the resident entry and reports the invalidation/miss behavior |
 | `sibling_discovery` | Spawn, complete directory enumeration, natural sort, channel batches, and final batch through the current scanner |
 | `sibling_navigation` | Playlist step plus the current synchronous metadata decode |
 | `resident_sibling_switch` | One resident small-Sibling switch from key event through cache lookup, commit, and screen construction |
 | `resident_sibling_switch_4k` | One resident 3840x2160 Sibling switch through cache lookup, commit, and screen construction; decode setup is outside the timer |
 | `key_repeat_resident_right`, `key_repeat_resident_left` | Deterministic 16-key resident sequences that verify every available Sibling is displayed in order |
+| `sustained_key_repeat_right`, `sustained_key_repeat_left` | Named sustained Left/Right repeat rows using the same resident-resource sequence and checksum contract |
 | `key_repeat_faster_than_decode` | Deterministic 100-key burst with manual completions proving bounded pending work and latest-request-wins |
-| `frame_prepare_4k` | Zoom, pan, and 4K screen-element construction with one logical repeat tile |
+| `frame_prepare_4k` | Legacy combined zoom/pan and 4K screen-element construction row |
+| `pan_4k_transparent`, `pan_4k_opaque` | Separate 3840x2160 pan construction rows with alpha-present and proven-opaque resource states |
+| `zoom_4k_transparent`, `zoom_4k_opaque` | Separate 3840x2160 zoom construction rows with alpha-present and proven-opaque resource states |
+| `toggle_checkerboard_4k` | 4K checkerboard visibility toggle and screen reconstruction |
 | `pattern_tile` | Creation of the 32x32 logical repeat tile containing 16 px cells |
 | `screen_construct_4k` | Current UI2 element construction and repeat-tile reuse |
 | `screen_resize_to_4k` | Three screen builds needed to move from 1920x1080 to 3840x2160 |
-| `startup_cpu` | `new_app`, 4K metadata decode, state setup, and 1024x768 screen construction; it is not process-launch time |
+| `startup_cpu_cold`, `startup_cpu_warm` | Labeled CPU startup-path rows: `new_app`, 4K metadata decode, state setup, and 1024x768 screen construction; neither is process-launch time |
 
-`screen_construct_4k` and `frame_prepare_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements. The resident-switch rows likewise measure the state transition and UI2 element construction; their fixture decode and cache population happen before the stopwatch starts.
+`screen_construct_4k`, the four `pan_4k_*`/`zoom_4k_*` rows, `frame_prepare_4k`, and `toggle_checkerboard_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements. The resident-switch rows likewise measure the state transition and UI2 element construction; their fixture decode and cache population happen before the stopwatch starts and are identified separately from measured decode counters.
 
-Every row includes warmup count, fixed iteration count, cache label, byte budget, median, p95, cache metrics where applicable, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The `prefetch requested`, `prefetched`, `prefetch skipped`, and `prefetch coalesced` columns count Neighborhood candidates and accepted full-resolution cache insertions. A checksum mismatch fails the command. CI does not run this timing suite and has no timing threshold.
+Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Neighborhood candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
 
 ### Startup phase trace
 
@@ -125,7 +139,7 @@ The 4K resident-switch row keeps two 4K resources resident: 132,710,400 bytes of
 
 ## Live Wayland smoke
 
-Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen, complete directory scan, and a `prefetch_cached` event for the next Sibling, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300.
+Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen, complete directory scan, and a `prefetch_cached` event for the next Sibling, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300. It records cold/warm process launches, first content, first input, resize, toggle, resident switch, pan, zoom, sustained Left/Right input, frame cadence, decode counts, cache metrics, and prefetch counters.
 
 The harness sends real Wayland key input through `wtype` and verifies each action before the next run:
 
@@ -134,9 +148,9 @@ The harness sends real Wayland key input through `wtype` and verifies each actio
 - `p` is available only in the benchmark build and calls the current `App.pan` path.
 - `z` is available only in the benchmark build and calls the current `App.zoom_in` path.
 
-The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, Neighborhood prefetch counters, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
+The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, sustained Left/Right input counts, Neighborhood prefetch counters, decode counts, cache hit/miss/update/eviction/invalidation counters, cache byte budgets, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
 
-The cadence and `switch_to_frame` values are intervals between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame.
+The cadence and `switch_to_frame` values are intervals between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame. The live report prints `viewport_exact_3840x2160`, `post_present_fence`, and `target_4k60` explicitly; a false exact-viewport result or unavailable fence is a limitation, not a pass.
 
 ## Recorded baseline
 
@@ -244,3 +258,58 @@ The following remain targets rather than guarantees:
 - 8.3 ms frame headroom
 
 The current live harness cannot prove presented-frame GPU time. A later resource or renderer change can add a backend fence or GPU timestamp without changing the fixture, statistics, build, hardware, or checksum reporting contract.
+
+## Final #26 validation report
+
+Validation source: the `t3code/15-integration` branch with UI2 submodule `e740b6b09d8a`; each benchmark’s build output records the exact commit. All timing thresholds remain reporting-only in hosted CI. The final report is intentionally split into measured evidence, targets, and unverified platform work.
+
+### Commands and evidence
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Root correctness | `make test` | 16 test files passed, including deterministic checkerboard phase/clipping, alpha reference compositing, resize, transform, decode-count, cache-invalidation, and repeat coverage |
+| Root build | `make build` and `make build-wayland` | Passed on the Linux host |
+| Headless benchmark | `make benchmark BENCHMARK_ARGS="--warmup 2 --iterations 10 --cache both"` | Passed; fixed-iteration checksum and counter status was `ok` for every row |
+| Benchmark compile | `make benchmark-build` | Passed |
+| Live Wayland | `make benchmark-wayland` | Passed cold and warm niri runs; evidence below |
+| Linux UI2 checks | `make -C ui2 check-linux` | Passed |
+| Focused UI2 contracts | `v test ui2/ui/image_resource_test.v ui2/ui/repeat_pattern_test.v` | 2 passed |
+| UI2 cross source checks | `make -C ui2 check-macos check-ios check-android check-windows` | Passed |
+| Custom cross checks | `make -C ui2 check-custom-macos check-custom-windows` | Blocked by stale `ui_custom_test.v` calls to the two-argument `handle_key_down`; no Viewer contract source error was reported |
+| Native contract inventory | `./benchmarks/native_contract_check.sh --commands` | Printed runnable AppKit, UIKit, Windows, and Linux commands |
+| Shell validation | `shellcheck benchmarks/wayland_smoke.sh benchmarks/native_contract_check.sh` | Passed after fixing the `CDPATH` assignment warning |
+
+The root benchmark includes separate `pan_4k_transparent`, `pan_4k_opaque`, `zoom_4k_transparent`, and `zoom_4k_opaque` rows. Those rows measure Viewer/UI2 element construction at 3840x2160, not GPU presentation. The `decodes` and `prefetch decodes` columns count decoder invocations; cache hits and prefetched resources do not increment them. The cache columns expose hits, misses, updates, evictions, invalidations, resident/peak bytes, CPU/renderer bytes, and the configured budget. `checksum samples` equals the configured measured iteration count and `checksum mismatches` is zero for a passing row.
+
+### Live Wayland evidence
+
+| Measurement | Cold process | Warm process |
+| --- | ---: | ---: |
+| Measured viewport | 3840x2094 | 3840x2094 |
+| Process launch to first content | 846.23 ms | 1221.77 ms |
+| Process launch to first input | 1136.29 ms | 1489.33 ms |
+| Toggle to screen build | 0.16 ms | 0.19 ms |
+| Resident Sibling switch to screen build | 0.19 ms | 0.29 ms |
+| Pan to screen build | 0.89 ms | 0.21 ms |
+| Zoom to screen build | 0.31 ms | 0.55 ms |
+| Resize request to measured-width screen build | 26.18 ms | 27.99 ms |
+| Frame callback median | 16.78 ms | 16.78 ms |
+| Frame callback p95 | 16.89 ms | 16.94 ms |
+| Decode count / prefetch decode count | 2 / 4 | 2 / 4 |
+| User requested / displayed / skipped / coalesced | 17 / 5 / 12 / 11 | 17 / 5 / 12 / 11 |
+| Prefetch requested / prefetched / skipped / coalesced / cancelled | 85 / 2 / 83 / 4 / 11 | 85 / 2 / 83 / 4 / 11 |
+| Prefetch cached events | 2 | 2 |
+| Cache hits / misses / evictions / invalidations | 27 / 10 / 0 / 0 | 27 / 10 / 0 / 0 |
+| Cache resident / peak / budget bytes | 199,114,752 / 199,114,752 / 268,435,456 | 199,114,752 / 199,114,752 / 268,435,456 |
+| Sustained Left / Right input events | 8 / 8 | 8 / 8 |
+| Samples after warmup | 300 | 300 |
+| Trace checksum | `d5ba15f0ab240e98` | `d5ba15f0ab240e98` |
+
+The niri host exposes a 3840x2160 physical eDP mode, but the measured Viewer viewport is 3840x2094 because the compositor/window configuration reserves 66 vertical pixels. UI2 exposes no post-present fence or GPU timestamp. Consequently these results are build-callback cadence and action-to-build evidence only. The 4K60 p95 target and 8.3 ms headroom goal are **not claimed as passed**.
+
+### Acceptance audit and platform gaps
+
+- Generic UI2 `ImageResource`/`RepeatPattern` contracts, the Viewer’s single non-platform-branched path, legacy path retention, cache/decode instrumentation, transparent/opaque transform rows, repeat rows, startup phases, and deterministic semantic tests are covered.
+- AppKit, UIKit, and Windows source/contract tests are present in UI2 and their runnable commands are listed above, but native runtime builds and screenshots were not run on this Linux host. The non-custom macOS, iOS, Android, and Windows source checks pass; custom macOS/Windows checks are blocked by the stale two-call `handle_key_down` test calls, and the custom example build is blocked by the existing V script’s `string.join` usage. Windows/Linux cross-build availability is therefore a source/toolchain check, not a native visual pass.
+- The legacy path remains documented because native runtime/visual verification is incomplete; removing it would weaken supported-backend compatibility.
+- The 4K60 target requires a future exact 3840x2160 viewport and post-present fence measurement. The current checked-in evidence does not satisfy that hardware/fence prerequisite.
