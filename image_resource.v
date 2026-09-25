@@ -130,6 +130,7 @@ pub:
 	request        ImageRequest
 	cpu_bytes      int
 	renderer_bytes int
+	decode_count   int
 mut:
 	resource  ui2.ImageResource
 	signature SiblingFileSignature
@@ -137,21 +138,30 @@ mut:
 
 pub struct ImagePipelineMetrics {
 pub mut:
-	requested         int
-	started           int
-	completed         int
-	accepted          int
-	committed         int
-	displayed         int
-	skipped           int
-	rejected          int
-	coalesced         int
-	resident_hits     int
-	cache_hits        int
-	cache_misses      int
-	failed            int
-	max_pending       int
-	max_total_pending int
+	requested            int
+	started              int
+	completed            int
+	accepted             int
+	committed            int
+	displayed            int
+	skipped              int
+	rejected             int
+	coalesced            int
+	resident_hits        int
+	cache_hits           int
+	cache_misses         int
+	cache_updates        int
+	cache_evictions      int
+	cache_invalidations  int
+	cache_resident_bytes int
+	cache_peak_bytes     int
+	cache_cpu_bytes      int
+	cache_renderer_bytes int
+	cache_budget         int
+	decode_count         int
+	failed               int
+	max_pending          int
+	max_total_pending    int
 }
 
 pub struct ImagePrefetchMetrics {
@@ -166,6 +176,7 @@ pub mut:
 	resident_hits int
 	cache_hits    int
 	cache_misses  int
+	decode_count  int
 	max_pending   int
 }
 
@@ -234,22 +245,26 @@ fn image_pipeline_worker(request ImageRequest, decoder ImageResourceDecoder, res
 	mut signature := request.signature
 	mut cpu_bytes := 0
 	mut renderer_bytes := 0
+	mut decode_count := 0
 	if voidptr(decoder) != unsafe { nil } {
 		before := sibling_file_signature(request.path)
+		decode_count = 1
 		decoded := decoder(request.path) or {
 			result_ch <- ImagePipelineResult{
-				request:   request
-				resource:  ui2.error_image_resource('image-resource-${request.generation}', request.path, err.msg())
-				signature: signature
+				request:      request
+				resource:     ui2.error_image_resource('image-resource-${request.generation}', request.path, err.msg())
+				signature:    signature
+				decode_count: decode_count
 			}
 			return
 		}
 		after := sibling_file_signature(request.path)
 		if before.exists && after != before {
 			result_ch <- ImagePipelineResult{
-				request:   request
-				resource:  ui2.error_image_resource('image-resource-${request.generation}', request.path, 'image file changed during decode')
-				signature: after
+				request:      request
+				resource:     ui2.error_image_resource('image-resource-${request.generation}', request.path, 'image file changed during decode')
+				signature:    after
+				decode_count: decode_count
 			}
 			return
 		}
@@ -268,6 +283,7 @@ fn image_pipeline_worker(request ImageRequest, decoder ImageResourceDecoder, res
 		signature:      signature
 		cpu_bytes:      cpu_bytes
 		renderer_bytes: renderer_bytes
+		decode_count:   decode_count
 	}
 }
 
@@ -285,22 +301,26 @@ fn image_prefetch_worker(request ImageRequest, decoder ImageResourceDecoder, res
 	mut signature := request.signature
 	mut cpu_bytes := 0
 	mut renderer_bytes := 0
+	mut decode_count := 0
 	if !canceled && voidptr(decoder) != unsafe { nil } {
 		before := sibling_file_signature(request.path)
+		decode_count = 1
 		decoded := decoder(request.path) or {
 			result_ch <- ImagePipelineResult{
-				request:   request
-				resource:  ui2.error_image_resource('image-resource-${request.generation}', request.path, err.msg())
-				signature: signature
+				request:      request
+				resource:     ui2.error_image_resource('image-resource-${request.generation}', request.path, err.msg())
+				signature:    signature
+				decode_count: decode_count
 			}
 			return
 		}
 		after := sibling_file_signature(request.path)
 		if before.exists && after != before {
 			result_ch <- ImagePipelineResult{
-				request:   request
-				resource:  ui2.error_image_resource('image-resource-${request.generation}', request.path, 'image file changed during decode')
-				signature: after
+				request:      request
+				resource:     ui2.error_image_resource('image-resource-${request.generation}', request.path, 'image file changed during decode')
+				signature:    after
+				decode_count: decode_count
 			}
 			return
 		}
@@ -319,6 +339,7 @@ fn image_prefetch_worker(request ImageRequest, decoder ImageResourceDecoder, res
 		signature:      signature
 		cpu_bytes:      cpu_bytes
 		renderer_bytes: renderer_bytes
+		decode_count:   decode_count
 	}
 }
 
@@ -335,6 +356,18 @@ fn (mut pipeline ImagePipeline) update_pending_metrics() {
 	if total > pipeline.metrics.max_total_pending {
 		pipeline.metrics.max_total_pending = total
 	}
+}
+
+fn (mut pipeline ImagePipeline) sync_cache_metrics() {
+	cache_metrics := pipeline.cache.metrics
+	pipeline.metrics.cache_updates = cache_metrics.updates
+	pipeline.metrics.cache_evictions = cache_metrics.evictions
+	pipeline.metrics.cache_invalidations = cache_metrics.invalidations
+	pipeline.metrics.cache_resident_bytes = cache_metrics.resident_bytes
+	pipeline.metrics.cache_peak_bytes = cache_metrics.peak_bytes
+	pipeline.metrics.cache_cpu_bytes = cache_metrics.cpu_bytes
+	pipeline.metrics.cache_renderer_bytes = cache_metrics.renderer_bytes
+	pipeline.metrics.cache_budget = pipeline.cache.budget_bytes
 }
 
 pub fn (pipeline &ImagePipeline) pending_count() int {
@@ -406,6 +439,7 @@ pub fn (mut pipeline ImagePipeline) update_retention() {
 		required << current_path
 	}
 	pipeline.cache.set_requirements(current_path, required, nearby)
+	pipeline.sync_cache_metrics()
 }
 
 fn (mut pipeline ImagePipeline) cache_lookup(path string, signature SiblingFileSignature) ?ui2.ImageResource {
@@ -414,6 +448,7 @@ fn (mut pipeline ImagePipeline) cache_lookup(path string, signature SiblingFileS
 	resource := pipeline.cache.get(path, signature)
 	pipeline.metrics.cache_hits += pipeline.cache.metrics.hits - before_hits
 	pipeline.metrics.cache_misses += pipeline.cache.metrics.misses - before_misses
+	pipeline.sync_cache_metrics()
 	return resource
 }
 
@@ -838,6 +873,7 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 		select {
 			result := <-pipeline.result_ch {
 				drained++
+				pipeline.metrics.decode_count += result.decode_count
 				if !pipeline.has_active || result.request.generation != pipeline.active_request.generation
 					|| result.request.path != pipeline.active_request.path {
 					pipeline.metrics.rejected++
@@ -895,6 +931,7 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 		select {
 			result := <-pipeline.prefetch_result_ch {
 				prefetch_drained++
+				pipeline.prefetch_metrics.decode_count += result.decode_count
 				if !pipeline.has_prefetch_active
 					|| result.request.generation != pipeline.prefetch_active_request.generation
 					|| result.request.path != pipeline.prefetch_active_request.path {
@@ -940,5 +977,6 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 		pipeline.pump_prefetch()
 	}
 	pipeline.update_pending_metrics()
+	pipeline.sync_cache_metrics()
 	return accepted
 }

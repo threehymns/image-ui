@@ -59,6 +59,9 @@ pub mut:
 	phase_trace         StartupPhaseTrace
 	pipeline_metrics    ImagePipelineMetrics
 	prefetch_metrics    ImagePrefetchMetrics
+	cache_metrics       SiblingResourceCacheMetrics
+	left_input_count    int
+	right_input_count   int
 }
 
 pub struct LiveTraceSummary {
@@ -89,7 +92,22 @@ pub mut:
 	prefetched                  int
 	prefetch_skipped            int
 	prefetch_coalesced          int
+	prefetch_cancelled          int
 	prefetch_cached             int
+	decode_count                int
+	prefetch_decodes            int
+	cache_hits                  int
+	cache_misses                int
+	cache_updates               int
+	cache_evictions             int
+	cache_invalidations         int
+	cache_resident_bytes        int
+	cache_peak_bytes            int
+	cache_cpu_bytes             int
+	cache_renderer_bytes        int
+	cache_budget                int
+	left_input_count            int
+	right_input_count           int
 }
 
 pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !LiveTraceSummary {
@@ -168,6 +186,38 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 						'prefetched' { summary.prefetched = counter_parts[1].int() }
 						'prefetch_skipped' { summary.prefetch_skipped = counter_parts[1].int() }
 						'prefetch_coalesced' { summary.prefetch_coalesced = counter_parts[1].int() }
+						'prefetch_cancelled' { summary.prefetch_cancelled = counter_parts[1].int() }
+						'decodes' { summary.decode_count = counter_parts[1].int() }
+						'prefetch_decodes' { summary.prefetch_decodes = counter_parts[1].int() }
+						'cache_hits' { summary.cache_hits = counter_parts[1].int() }
+						'cache_misses' { summary.cache_misses = counter_parts[1].int() }
+						'cache_updates' { summary.cache_updates = counter_parts[1].int() }
+						'cache_evictions' { summary.cache_evictions = counter_parts[1].int() }
+						'cache_invalidations' {
+							summary.cache_invalidations = counter_parts[1].int()
+						}
+						'cache_resident_bytes' {
+							summary.cache_resident_bytes = counter_parts[1].int()
+						}
+						'cache_peak_bytes' { summary.cache_peak_bytes = counter_parts[1].int() }
+						'cache_cpu_bytes' { summary.cache_cpu_bytes = counter_parts[1].int() }
+						'cache_renderer_bytes' {
+							summary.cache_renderer_bytes = counter_parts[1].int()
+						}
+						'cache_budget' { summary.cache_budget = counter_parts[1].int() }
+						else {}
+					}
+				}
+			}
+			'repeat_counters' {
+				for item in row.detail.split(',') {
+					counter_parts := item.split(':')
+					if counter_parts.len != 2 {
+						continue
+					}
+					match counter_parts[0] {
+						'left' { summary.left_input_count = counter_parts[1].int() }
+						'right' { summary.right_input_count = counter_parts[1].int() }
 						else {}
 					}
 				}
@@ -277,9 +327,12 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 	}
 	trace.pending_actions.clear()
 	if trace.frame_count >= trace.frame_target && !trace.finished {
+		trace.write_event('repeat_counters', trace.last_width, trace.last_height, trace.frame_count,
+			trace.left_input_count + trace.right_input_count,
+			'left:${trace.left_input_count},right:${trace.right_input_count}')
 		trace.write_event('pipeline_counters', trace.last_width, trace.last_height, trace.frame_count,
 			trace.pipeline_metrics.requested,
-			'displayed:${trace.pipeline_metrics.displayed},skipped:${trace.pipeline_metrics.skipped},coalesced:${trace.pipeline_metrics.coalesced},prefetch_requested:${trace.prefetch_metrics.requested},prefetched:${trace.prefetch_metrics.prefetched},prefetch_skipped:${trace.prefetch_metrics.skipped},prefetch_coalesced:${trace.prefetch_metrics.coalesced}')
+			'displayed:${trace.pipeline_metrics.displayed},skipped:${trace.pipeline_metrics.skipped},coalesced:${trace.pipeline_metrics.coalesced},prefetch_requested:${trace.prefetch_metrics.requested},prefetched:${trace.prefetch_metrics.prefetched},prefetch_skipped:${trace.prefetch_metrics.skipped},prefetch_coalesced:${trace.prefetch_metrics.coalesced},prefetch_cancelled:${trace.prefetch_metrics.cancelled},decodes:${trace.pipeline_metrics.decode_count},prefetch_decodes:${trace.prefetch_metrics.decode_count},cache_hits:${trace.cache_metrics.hits},cache_misses:${trace.cache_metrics.misses},cache_updates:${trace.cache_metrics.updates},cache_evictions:${trace.cache_metrics.evictions},cache_invalidations:${trace.cache_metrics.invalidations},cache_resident_bytes:${trace.cache_metrics.resident_bytes},cache_peak_bytes:${trace.cache_metrics.peak_bytes},cache_cpu_bytes:${trace.cache_metrics.cpu_bytes},cache_renderer_bytes:${trace.cache_metrics.renderer_bytes},cache_budget:${trace.pipeline_metrics.cache_budget}')
 		for frame in trace.frames {
 			trace.write_event('frame_interval', frame.width, frame.height, frame.order, frame.interval_us, '')
 		}
@@ -314,12 +367,13 @@ pub fn (mut trace BenchmarkLiveTrace) on_prefetch(path string) {
 	trace.write_event('prefetch_cached', trace.last_width, trace.last_height, trace.frame_count, 0, path)
 }
 
-pub fn (mut trace BenchmarkLiveTrace) on_pipeline(metrics ImagePipelineMetrics, prefetch ImagePrefetchMetrics) {
+pub fn (mut trace BenchmarkLiveTrace) on_pipeline(metrics ImagePipelineMetrics, prefetch ImagePrefetchMetrics, cache SiblingResourceCacheMetrics) {
 	if !trace.enabled {
 		return
 	}
 	trace.pipeline_metrics = metrics
 	trace.prefetch_metrics = prefetch
+	trace.cache_metrics = cache
 }
 
 fn (mut trace BenchmarkLiveTrace) on_key(code ui2.KeyCode) {
@@ -327,6 +381,11 @@ fn (mut trace BenchmarkLiveTrace) on_key(code ui2.KeyCode) {
 		return
 	}
 	action := benchmark_key_action(code)
+	if code == .left {
+		trace.left_input_count++
+	} else if code == .right {
+		trace.right_input_count++
+	}
 	now_mono_us := i64(time.sys_mono_now() / 1000)
 	if !trace.has_input {
 		trace.has_input = true

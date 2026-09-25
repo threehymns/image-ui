@@ -4,7 +4,7 @@ A fast, lightweight desktop image viewer system application built with [V](https
 
 ## Features
 
-- **Measured Performance**: Checked-in headless and live Wayland benchmarks with deterministic fixtures, cache controls, median/p95 output, phase traces, and checksum gates. The 10 ms startup value is an aspiration; 60 FPS at 4K remains a target.
+- **Measured Performance**: Checked-in headless and live Wayland benchmarks with deterministic fixtures, separate transparent/opaque 3840x2160 pan and zoom rows, fixed iterations, cache/decode counters, median/p95 output, phase traces, and checksum gates. The 10 ms startup value is an aspiration; 60 FPS at 4K remains a target.
 - **Hardware-Accelerated Canvas**: Direct Sokol/`gg` rendering pipeline with continuous cursor-anchored zoom, sub-pixel pan, 90-degree step rotation, and flip.
 - **Prioritized Neighborhood Sibling Scan**: Immediate adjacent ±50 files streamed over worker channel for instant arrow navigation, with non-blocking background folder discovery.
 - **Full-Resolution Sibling LRU**: Byte-bounded current and nearby decoded resources reuse resident data without another file read or full decode.
@@ -71,17 +71,23 @@ The live niri/Wayland smoke records process launch, first content, real key inpu
 make benchmark-wayland
 ```
 
-Use `--warmup`, `--iterations`, `--cache`, and `--cache-budget` through `BENCHMARK_ARGS` to control sampling. CI only compiles the benchmark; it has no noisy wall-clock gates. See the [benchmark methodology and recorded baseline](./docs/benchmarks.md).
+Use `--warmup`, `--iterations`, `--cache`, and `--cache-budget` through `BENCHMARK_ARGS` to control sampling. CI only compiles the benchmark; it has no noisy wall-clock gates. The report records decode counts, cache hits/misses/evictions/invalidations, prefetch and coalescing counters, byte budgets, and fixed-iteration checksum checks. See the [benchmark methodology and recorded baseline](./docs/benchmarks.md).
+
+Native contract checks are runnable on their matching hosts through [`benchmarks/native_contract_check.sh`](./benchmarks/native_contract_check.sh). Use `--commands` to print the AppKit, UIKit, Windows, and Linux commands without running native code. The Linux path does not claim that AppKit, UIKit, or Windows visuals ran.
+
+## Compatibility path
+
+The Viewer uses the generic `ui2.ImageResource` and `ui2.RepeatPattern` contracts for its normal path. The path-based UI2 image constructors and the legacy resource adapter remain available as a documented compatibility path for supported backends and integrations that have not yet supplied decoded resource input. They are retained until native runtime and visual verification is available on every supported backend; removing them now would weaken compatibility without evidence.
 
 ## Performance claims
 
 ### Measured results
 
-The checked-in measurements describe the current path. The benchmark reports separate monotonic startup phases for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. The current 4K image metadata and full-resource decode are measured costs, not guarantees; the transparency background uses a small repeat tile rather than a full-window raster. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence. See the [benchmark methodology and recorded results](./docs/benchmarks.md).
+The checked-in measurements describe the current path. The benchmark reports separate monotonic startup phases for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. The current 4K image metadata and full-resource decode are measured costs, not guarantees; the transparency background uses a small repeat tile rather than a full-window raster. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence. The available niri output has a 3840x2160 physical mode but the measured Viewer viewport is recorded separately; a 3840x2094 or other non-exact viewport is not 4K evidence. See the [benchmark methodology and recorded results](./docs/benchmarks.md).
 
 ### Aspiration
 
-The 10 ms complete-process startup value is an aspiration, not a measured guarantee. The 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom values remain targets until the corresponding measurements support them.
+The 10 ms complete-process startup value is an aspiration, not a measured guarantee. The 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom values remain targets until an exact 3840x2160 viewport and a post-present fence support them. The checked-in live result is reported as cadence evidence, not as a 4K60 pass.
 
 ## Forks & upstream
 

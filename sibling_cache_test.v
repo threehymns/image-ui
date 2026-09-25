@@ -220,6 +220,7 @@ fn test_prefetched_resource_is_reused_by_user_request_without_second_decode() {
 	}
 	pipeline.prefetch_result_ch <- prefetched
 	assert pipeline.poll().len == 0
+	assert pipeline.prefetch_metrics.decode_count == 1
 	assert pipeline.cache.contains(current)
 	request := pipeline.request(current, 'user')
 	results := pipeline.poll()

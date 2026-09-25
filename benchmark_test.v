@@ -88,6 +88,35 @@ fn test_resident_switch_benchmark_reports_sibling_request_counters() {
 	assert sample.coalesced == 0
 }
 
+fn test_integration_benchmark_rows_cover_transform_variants_and_invalidation() {
+	root := os.join_path(os.temp_dir(), 'image-ui-benchmark-integration-${os.getpid()}')
+	os.rmdir_all(root) or {}
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	fixtures := generate_benchmark_fixtures(root, 4) or { panic(err) }
+	for kind in ['pan_4k_transparent', 'pan_4k_opaque', 'zoom_4k_transparent', 'zoom_4k_opaque',
+		'toggle_checkerboard_4k'] {
+		sample := execute_benchmark_operation(BenchmarkOperation{
+			kind:   kind
+			width:  benchmark_large_width
+			height: benchmark_large_height
+			cache:  'visual-contract'
+		}, 0)
+		assert sample.checksum != 0
+		assert sample.elapsed_ns >= 0
+	}
+	invalidation := execute_benchmark_operation(BenchmarkOperation{
+		kind:               'sibling_cache_invalidation'
+		path:               fixtures.opaque
+		cache:              'sibling-lru-invalidation'
+		cache_budget_bytes: 64 * 1024
+	}, 0)
+	assert invalidation.decode_count == 1
+	assert invalidation.cache_invalidations == 1
+	assert invalidation.cache_misses == 1
+}
+
 fn test_benchmark_config_exposes_fixed_sample_and_cache_controls() {
 	config := parse_benchmark_config(['--warmup', '3', '--iterations', '7', '--cache', 'cold']) or {
 		panic(err)
@@ -128,7 +157,8 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 		'input_key\t21000\t3840\t2160\t1\t10000',
 		'action_presented\t22667\t3840\t2160\t2\t1667\ttoggle',
 		'prefetch_cached\t22000\t3840\t2160\t1\t0\tneighbor.bmp',
-		'pipeline_counters\t89335\t2560\t1440\t6\t2\tdisplayed:2,skipped:0,coalesced:0,prefetch_requested:3,prefetched:1,prefetch_skipped:2,prefetch_coalesced:0',
+		'pipeline_counters\t89335\t2560\t1440\t6\t2\tdisplayed:2,skipped:0,coalesced:0,prefetch_requested:3,prefetched:1,prefetch_skipped:2,prefetch_coalesced:0,prefetch_cancelled:1,decodes:2,prefetch_decodes:1,cache_hits:4,cache_misses:2,cache_updates:1,cache_evictions:0,cache_invalidations:1,cache_resident_bytes:100,cache_peak_bytes:120,cache_cpu_bytes:60,cache_renderer_bytes:60,cache_budget:200',
+		'repeat_counters\t89335\t2560\t1440\t6\t16\tleft:8,right:8',
 		'frame_interval\t22667\t3840\t2160\t3\t16667',
 		'frame_interval\t39334\t3840\t2160\t4\t16667',
 		'resize_observed\t56001\t2560\t1440\t5\t0',
@@ -149,6 +179,16 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	assert summary.prefetch_requested == 3
 	assert summary.prefetched == 1
 	assert summary.prefetch_skipped == 2
+	assert summary.prefetch_cancelled == 1
+	assert summary.decode_count == 2
+	assert summary.prefetch_decodes == 1
+	assert summary.cache_hits == 4
+	assert summary.cache_misses == 2
+	assert summary.cache_invalidations == 1
+	assert summary.cache_peak_bytes == 120
+	assert summary.cache_budget == 200
+	assert summary.left_input_count == 8
+	assert summary.right_input_count == 8
 	assert summary.resize_to_frame_ns == 0
 	assert summary.viewport_width == 2560
 	assert summary.viewport_height == 1440
