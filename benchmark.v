@@ -50,6 +50,113 @@ pub mut:
 	cache_budget              int
 }
 
+pub fn benchmark_counters_from_metrics(pipeline ImagePipelineMetrics, prefetch ImagePrefetchMetrics,
+	cache SiblingResourceCacheMetrics) BenchmarkCounters {
+	return BenchmarkCounters{
+		requested:                 pipeline.requested
+		displayed:                 pipeline.displayed
+		skipped:                   pipeline.skipped
+		coalesced:                 pipeline.coalesced
+		prefetch_requested:        prefetch.requested
+		prefetched:                prefetch.prefetched
+		prefetch_skipped:          prefetch.skipped
+		prefetch_coalesced:        prefetch.coalesced
+		prefetch_cancelled:        prefetch.cancelled
+		prefetch_decodes:          prefetch.decode_count
+		decode_count:              pipeline.decode_count
+		max_pending:               pipeline.max_pending
+		max_total_pending:         pipeline.max_total_pending
+		cache_hits:                cache.hits
+		cache_misses:              cache.misses
+		cache_updates:             cache.updates
+		cache_evictions:           cache.evictions
+		cache_invalidations:       cache.invalidations
+		cache_content_validations: cache.content_validations
+		cache_bytes:               cache.resident_bytes
+		cache_peak_bytes:          cache.peak_bytes
+		cache_cpu_bytes:           cache.cpu_bytes
+		cache_renderer_bytes:      cache.renderer_bytes
+		cache_budget:              pipeline.cache_budget
+	}
+}
+
+fn benchmark_counter_report_fields(counters BenchmarkCounters, include_pending bool) []string {
+	mut fields := [
+		'displayed:${counters.displayed}',
+		'skipped:${counters.skipped}',
+		'coalesced:${counters.coalesced}',
+		'prefetch_requested:${counters.prefetch_requested}',
+		'prefetched:${counters.prefetched}',
+		'prefetch_skipped:${counters.prefetch_skipped}',
+		'prefetch_coalesced:${counters.prefetch_coalesced}',
+		'prefetch_cancelled:${counters.prefetch_cancelled}',
+		'decodes:${counters.decode_count}',
+		'prefetch_decodes:${counters.prefetch_decodes}',
+	]
+	if include_pending {
+		fields << 'max_pending:${counters.max_pending}'
+		fields << 'max_total_pending:${counters.max_total_pending}'
+	}
+	fields << 'cache_hits:${counters.cache_hits}'
+	fields << 'cache_misses:${counters.cache_misses}'
+	fields << 'cache_updates:${counters.cache_updates}'
+	fields << 'cache_evictions:${counters.cache_evictions}'
+	fields << 'cache_invalidations:${counters.cache_invalidations}'
+	fields << 'cache_content_validations:${counters.cache_content_validations}'
+	fields << 'cache_resident_bytes:${counters.cache_bytes}'
+	fields << 'cache_peak_bytes:${counters.cache_peak_bytes}'
+	fields << 'cache_cpu_bytes:${counters.cache_cpu_bytes}'
+	fields << 'cache_renderer_bytes:${counters.cache_renderer_bytes}'
+	fields << 'cache_budget:${counters.cache_budget}'
+	return fields
+}
+
+pub fn benchmark_counters_report(counters BenchmarkCounters) string {
+	return benchmark_counter_report_fields(counters, false).join(',')
+}
+
+pub fn benchmark_counters_observation(counters BenchmarkCounters) string {
+	mut fields := ['requested:${counters.requested}']
+	fields << benchmark_counter_report_fields(counters, true)
+	return fields.join(':')
+}
+
+pub fn benchmark_counters_from_report(detail string, requested int) BenchmarkCounters {
+	mut counters := BenchmarkCounters{ requested: requested }
+	for item in detail.split(',') {
+		parts := item.split(':')
+		if parts.len != 2 {
+			continue
+		}
+		value := parts[1].int()
+		match parts[0] {
+			'displayed' { counters.displayed = value }
+			'skipped' { counters.skipped = value }
+			'coalesced' { counters.coalesced = value }
+			'prefetch_requested' { counters.prefetch_requested = value }
+			'prefetched' { counters.prefetched = value }
+			'prefetch_skipped' { counters.prefetch_skipped = value }
+			'prefetch_coalesced' { counters.prefetch_coalesced = value }
+			'prefetch_cancelled' { counters.prefetch_cancelled = value }
+			'decodes' { counters.decode_count = value }
+			'prefetch_decodes' { counters.prefetch_decodes = value }
+			'cache_hits' { counters.cache_hits = value }
+			'cache_misses' { counters.cache_misses = value }
+			'cache_updates' { counters.cache_updates = value }
+			'cache_evictions' { counters.cache_evictions = value }
+			'cache_invalidations' { counters.cache_invalidations = value }
+			'cache_content_validations' { counters.cache_content_validations = value }
+			'cache_resident_bytes' { counters.cache_bytes = value }
+			'cache_peak_bytes' { counters.cache_peak_bytes = value }
+			'cache_cpu_bytes' { counters.cache_cpu_bytes = value }
+			'cache_renderer_bytes' { counters.cache_renderer_bytes = value }
+			'cache_budget' { counters.cache_budget = value }
+			else {}
+		}
+	}
+	return counters
+}
+
 pub struct BenchmarkSample {
 pub:
 	elapsed_ns i64
@@ -643,8 +750,7 @@ fn (mut runner BenchmarkRunner) add(operation BenchmarkOperation) {
 }
 
 fn benchmark_sample_observation(sample BenchmarkSample) string {
-	counters := sample.counters
-	return '${sample.checksum}:${counters.requested}:${counters.displayed}:${counters.skipped}:${counters.coalesced}:${counters.prefetch_requested}:${counters.prefetched}:${counters.prefetch_skipped}:${counters.prefetch_coalesced}:${counters.prefetch_cancelled}:${counters.prefetch_decodes}:${counters.decode_count}:${counters.max_pending}:${counters.max_total_pending}:${counters.cache_hits}:${counters.cache_misses}:${counters.cache_updates}:${counters.cache_evictions}:${counters.cache_invalidations}:${counters.cache_content_validations}:${counters.cache_bytes}:${counters.cache_peak_bytes}:${counters.cache_cpu_bytes}:${counters.cache_renderer_bytes}'
+	return '${sample.checksum}:${benchmark_counters_observation(sample.counters)}'
 }
 
 fn benchmark_frame_app(width int, height int, opacity ui2.ImageOpacity) &ViewerApp {
@@ -964,34 +1070,7 @@ fn benchmark_ready_resource_with_opacity(path string, width int, height int, opa
 }
 
 fn benchmark_pipeline_sample_counters(pipeline ImagePipeline) BenchmarkCounters {
-	prefetch := pipeline.prefetch_metrics()
-	cache_metrics := pipeline.cache.metrics
-	return BenchmarkCounters{
-		requested:                 pipeline.metrics.requested
-		displayed:                 pipeline.metrics.displayed
-		skipped:                   pipeline.metrics.skipped
-		coalesced:                 pipeline.metrics.coalesced
-		prefetch_requested:        prefetch.requested
-		prefetched:                prefetch.prefetched
-		prefetch_skipped:          prefetch.skipped
-		prefetch_coalesced:        prefetch.coalesced
-		prefetch_cancelled:        prefetch.cancelled
-		prefetch_decodes:          prefetch.decode_count
-		decode_count:              pipeline.metrics.decode_count
-		max_pending:               pipeline.metrics.max_pending
-		max_total_pending:         pipeline.metrics.max_total_pending
-		cache_hits:                cache_metrics.hits
-		cache_misses:              cache_metrics.misses
-		cache_updates:             cache_metrics.updates
-		cache_evictions:           cache_metrics.evictions
-		cache_invalidations:       cache_metrics.invalidations
-		cache_content_validations: cache_metrics.content_validations
-		cache_bytes:               cache_metrics.resident_bytes
-		cache_peak_bytes:          cache_metrics.peak_bytes
-		cache_cpu_bytes:           cache_metrics.cpu_bytes
-		cache_renderer_bytes:      cache_metrics.renderer_bytes
-		cache_budget:              pipeline.cache.budget_bytes
-	}
+	return benchmark_counters_from_metrics(pipeline.metrics, pipeline.prefetch_metrics(), pipeline.cache.metrics)
 }
 
 fn benchmark_pipeline_sample(elapsed_ns i64, checksum u64, app &ViewerApp) BenchmarkSample {
@@ -1181,10 +1260,10 @@ fn benchmark_viewer_for_app(mut app App, width int, height int) &ViewerApp {
 fn live_variant_actions_present(summary LiveTraceSummary, variant string) bool {
 	return match variant {
 		'transparent' {
-			summary.pan_transparent_to_frame_ns >= 0 && summary.zoom_transparent_to_frame_ns >= 0
+			summary.pan_transparent_samples >= 2 && summary.zoom_transparent_samples >= 2
 		}
 		'opaque' {
-			summary.pan_opaque_to_frame_ns >= 0 && summary.zoom_opaque_to_frame_ns >= 0
+			summary.pan_opaque_samples >= 2 && summary.zoom_opaque_samples >= 2
 		}
 		else {
 			false
@@ -1268,10 +1347,10 @@ fn run_wayland_smoke(target string) ! {
 	println('cache_resident_bytes=${summary.counters.cache_bytes} cache_peak_bytes=${summary.counters.cache_peak_bytes} cache_cpu_bytes=${summary.counters.cache_cpu_bytes} cache_renderer_bytes=${summary.counters.cache_renderer_bytes} cache_budget=${summary.counters.cache_budget}')
 	println('prefetch_requested=${summary.counters.prefetch_requested} prefetched=${summary.counters.prefetched} prefetch_skipped=${summary.counters.prefetch_skipped} prefetch_coalesced=${summary.counters.prefetch_coalesced} prefetch_cancelled=${summary.counters.prefetch_cancelled} prefetch_cached_events=${summary.prefetch_cached_events}')
 	println('repeat_left_input=${summary.left_input_count} repeat_right_input=${summary.right_input_count}')
-	println('pan_transparent_to_frame_ms=${benchmark_ms(summary.pan_transparent_to_frame_ns)}')
-	println('pan_opaque_to_frame_ms=${benchmark_ms(summary.pan_opaque_to_frame_ns)}')
-	println('zoom_transparent_to_frame_ms=${benchmark_ms(summary.zoom_transparent_to_frame_ns)}')
-	println('zoom_opaque_to_frame_ms=${benchmark_ms(summary.zoom_opaque_to_frame_ns)}')
+	println('pan_transparent_samples=${summary.pan_transparent_samples} pan_transparent_median_ms=${benchmark_ms_or_na(summary.pan_transparent_median_ns)} pan_transparent_p95_ms=${benchmark_ms_or_na(summary.pan_transparent_p95_ns)}')
+	println('pan_opaque_samples=${summary.pan_opaque_samples} pan_opaque_median_ms=${benchmark_ms_or_na(summary.pan_opaque_median_ns)} pan_opaque_p95_ms=${benchmark_ms_or_na(summary.pan_opaque_p95_ns)}')
+	println('zoom_transparent_samples=${summary.zoom_transparent_samples} zoom_transparent_median_ms=${benchmark_ms_or_na(summary.zoom_transparent_median_ns)} zoom_transparent_p95_ms=${benchmark_ms_or_na(summary.zoom_transparent_p95_ns)}')
+	println('zoom_opaque_samples=${summary.zoom_opaque_samples} zoom_opaque_median_ms=${benchmark_ms_or_na(summary.zoom_opaque_median_ns)} zoom_opaque_p95_ms=${benchmark_ms_or_na(summary.zoom_opaque_p95_ns)}')
 	println('resize_to_frame_ms=${benchmark_ms(summary.resize_to_frame_ns)}')
 	println('frame_callback_median_ms=${benchmark_ms(summary.frame_median_ns)}')
 	println('frame_callback_p95_ms=${benchmark_ms(summary.frame_p95_ns)}')
@@ -1316,6 +1395,10 @@ fn benchmark_cache_name(cache BenchmarkCacheSelection) string {
 
 fn benchmark_ms(value i64) string {
 	return '${f64(value) / 1_000_000.0:0.3}'
+}
+
+fn benchmark_ms_or_na(value i64) string {
+	return if value < 0 { 'n/a' } else { benchmark_ms(value) }
 }
 
 fn print_benchmark(title string) {

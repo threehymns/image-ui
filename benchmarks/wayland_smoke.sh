@@ -36,12 +36,21 @@ if [[ -z ${WAYLAND_DISPLAY:-} || ! -S ${XDG_RUNTIME_DIR:-/nonexistent}/${WAYLAND
 	printf 'Wayland smoke skipped: no Wayland display socket (trace wait %s; window wait %s)\n' "$trace_wait_timeout" "$window_wait_timeout"
 	exit 0
 fi
-for command in niri jq wtype date mktemp grep seq sleep; do
+for command in niri jq date mktemp grep seq sleep; do
 	if ! command -v "$command" >/dev/null 2>&1; then
 		printf 'Wayland smoke skipped: missing %s (trace wait %s; window wait %s)\n' "$command" "$trace_wait_timeout" "$window_wait_timeout"
 		exit 0
 	fi
 done
+input_tool=
+if command -v ydotool >/dev/null 2>&1; then
+	input_tool=ydotool
+elif command -v wtype >/dev/null 2>&1; then
+	input_tool=wtype
+else
+	printf 'Wayland smoke skipped: missing ydotool or wtype (trace wait %s; window wait %s)\n' "$trace_wait_timeout" "$window_wait_timeout"
+	exit 0
+fi
 if [[ ! -x $binary ]]; then
 	printf 'Wayland smoke failed: benchmark executable not found: %s (trace wait %s; window wait %s)\n' "$binary" "$trace_wait_timeout" "$window_wait_timeout" >&2
 	exit 1
@@ -64,10 +73,20 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 "$binary" --prepare-fixtures "$tmp/fixtures" >"$tmp/fixtures.log"
-prefetch_target='large-4k_next.bmp'
 repeat_keys=${IMAGE_UI_BENCHMARK_REPEAT_KEYS:-8}
-if (( repeat_keys < 1 )); then
+if ! [[ $repeat_keys =~ ^[1-9][0-9]*$ ]]; then
 	repeat_keys=8
+fi
+transform_repeat=${IMAGE_UI_BENCHMARK_REPEAT_TRANSFORMS:-8}
+if ! [[ $transform_repeat =~ ^[1-9][0-9]*$ ]]; then
+	printf 'Wayland smoke failed: IMAGE_UI_BENCHMARK_REPEAT_TRANSFORMS must be a positive integer\n' >&2
+	exit 1
+fi
+frame_target=${IMAGE_UI_BENCHMARK_FRAME_TARGET:-1440}
+warmup_frames=${IMAGE_UI_BENCHMARK_WARMUP_FRAMES:-60}
+if ! [[ $frame_target =~ ^[1-9][0-9]*$ ]] || ! [[ $warmup_frames =~ ^[0-9]+$ ]] || ((warmup_frames >= frame_target)); then
+	printf 'Wayland smoke failed: frame target and warmup frames are invalid\n' >&2
+	exit 1
 fi
 
 wait_for_trace() {
@@ -92,14 +111,71 @@ wait_for_trace() {
 	return 1
 }
 
+wait_for_action() {
+	trace=$1
+	action=$2
+	pattern=$'^action_presented\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t'"${action}"'$'
+	for _ in $(seq 1 "$trace_wait_attempts"); do
+		if [[ -f $trace ]] && grep -Pq "$pattern" "$trace"; then
+			return 0
+		fi
+		if [[ -n ${pid:-} ]] && ! kill -0 "$pid" 2>/dev/null; then
+			printf 'Wayland smoke failed: benchmark process exited while waiting for action %s (trace wait %s)\n' "$action" "$trace_wait_timeout" >&2
+			if [[ -n ${log:-} && -f $log ]]; then
+				cat "$log" >&2
+			fi
+			return 1
+		fi
+		sleep "$trace_wait_delay"
+	done
+	printf 'Wayland smoke failed: action not observed after %s: %s\n' "$trace_wait_timeout" "$action" >&2
+	return 1
+}
+
+focus_window() {
+	window=$1
+	niri msg action focus-window --id "$window" >/dev/null
+	for _ in $(seq 1 "$window_wait_attempts"); do
+		if niri msg --json windows | jq -e --argjson id "$window" 'any(.[]; .id == $id and .is_focused)' >/dev/null; then
+			return 0
+		fi
+		sleep "$window_wait_delay"
+	done
+	printf 'Wayland smoke failed: window %s did not receive focus after %s\n' "$window" "$window_wait_timeout" >&2
+	return 1
+}
+
+send_key() {
+	key_code=$1
+	if [[ $input_tool == ydotool ]]; then
+		ydotool key "$key_code:1"
+		sleep 0.03
+		ydotool key "$key_code:0"
+		return
+	fi
+	case "$key_code" in
+		20) wtype t ;;
+		25) wtype p ;;
+		44) wtype z ;;
+		105) wtype -k Left ;;
+		106) wtype -k Right ;;
+		*)
+			printf 'Wayland smoke failed: unsupported key code %s\n' "$key_code" >&2
+			return 1
+			;;
+	esac
+}
+
 run_smoke() {
 	cache=$1
 	opacity=$2
 	if [[ $opacity == transparent ]]; then
 		target="$tmp/fixtures/large-alpha.tga"
+		prefetch_target='opaque.bmp'
 		expected_opacity=transparent
 	else
 		target="$tmp/fixtures/large-4k.bmp"
+		prefetch_target='large-4k_next.bmp'
 		expected_opacity=opaque
 	fi
 	trace="$tmp/wayland-$cache-$opacity.tsv"
@@ -111,8 +187,8 @@ run_smoke() {
 	IMAGE_UI_BENCHMARK_TRACE="$trace" \
 	IMAGE_UI_BENCHMARK_LAUNCH_US="$launch_us" \
 	IMAGE_UI_BENCHMARK_EXPECTED_OPACITY="$expected_opacity" \
-	IMAGE_UI_BENCHMARK_FRAME_TARGET=360 \
-	IMAGE_UI_BENCHMARK_WARMUP_FRAMES=60 \
+	IMAGE_UI_BENCHMARK_FRAME_TARGET="$frame_target" \
+	IMAGE_UI_BENCHMARK_WARMUP_FRAMES="$warmup_frames" \
 	IMAGE_UI_BENCHMARK_REPEAT_KEYS="$repeat_keys" \
 		"$binary" --wayland-smoke "$target" >"$log" 2>&1 &
 	pid=$!
@@ -136,11 +212,11 @@ run_smoke() {
 		cat "$log" >&2
 		exit 1
 	fi
-	niri msg action focus-window --id "$window_id" >/dev/null
+	focus_window "$window_id"
 	wait_for_trace "$trace" '^first_content'
 	wait_for_trace "$trace" '^scan_complete'
 	wait_for_trace "$trace" $'^prefetch_cached\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t0\t.*'"$prefetch_target"'$'
-	niri msg action focus-window --id "$window_id" >/dev/null
+	focus_window "$window_id"
 	workspace_id=$(niri msg --json windows | jq -r --argjson id "$window_id" '.[] | select(.id == $id) | .workspace_id')
 	output_name=$(niri msg --json workspaces | jq -r --argjson id "$workspace_id" '.[] | select(.id == $id) | .output')
 	scale=$(niri msg --json outputs | jq -r --arg name "$output_name" '.[$name].logical.scale')
@@ -149,27 +225,38 @@ run_smoke() {
 	printf '3840\n' >"$trace.resize_request_width"
 	niri msg action set-column-width "$logical_width" >/dev/null
 	wait_for_trace "$trace" $'^resize_observed\t[^\t]*\t3840\t'
-	niri msg action focus-window --id "$window_id" >/dev/null
-	wtype -k t
+	focus_window "$window_id"
 	sleep 0.2
-	niri msg action focus-window --id "$window_id" >/dev/null
-	wtype -k z
+	send_key 20
+	wait_for_action "$trace" toggle
 	sleep 0.2
-	niri msg action focus-window --id "$window_id" >/dev/null
-	wtype -k p
+	send_key 20
+	wait_for_action "$trace" toggle_restore
 	sleep 0.2
-	niri msg action focus-window --id "$window_id" >/dev/null
-	wtype -k Right
+	for index in $(seq 1 "$transform_repeat"); do
+		focus_window "$window_id"
+		sleep 0.2
+		send_key 25
+		wait_for_action "$trace" "pan_${expected_opacity}:${index}"
+	done
+	for index in $(seq 1 "$transform_repeat"); do
+		focus_window "$window_id"
+		sleep 0.2
+		send_key 44
+		wait_for_action "$trace" "zoom_${expected_opacity}:${index}"
+	done
+	focus_window "$window_id"
+	send_key 106
 	for _ in $(seq 1 $((repeat_keys - 1))); do
-		niri msg action focus-window --id "$window_id" >/dev/null
-		wtype -k Right
+		focus_window "$window_id"
+		send_key 106
 		sleep 0.03
-		niri msg action focus-window --id "$window_id" >/dev/null
-		wtype -k Left
+		focus_window "$window_id"
+		send_key 105
 		sleep 0.03
 	done
-	niri msg action focus-window --id "$window_id" >/dev/null
-	wtype -k Left
+	focus_window "$window_id"
+	send_key 105
 	if ! wait "$pid"; then
 		printf 'Wayland smoke failed: benchmark process failed (trace wait %s; window wait %s)\n' "$trace_wait_timeout" "$window_wait_timeout" >&2
 		cat "$log" >&2

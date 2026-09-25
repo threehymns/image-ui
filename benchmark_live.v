@@ -105,6 +105,8 @@ pub mut:
 	pending_actions     []LivePendingAction
 	pending_resize      bool
 	finished            bool
+	transform_counts    map[string]int
+	toggle_count        int
 	frames              []LiveFrameSample
 	phase_trace         StartupPhaseTrace
 	pipeline_metrics    ImagePipelineMetrics
@@ -124,6 +126,18 @@ pub mut:
 	pan_opaque_to_frame_ns       i64 = -1
 	zoom_transparent_to_frame_ns i64 = -1
 	zoom_opaque_to_frame_ns      i64 = -1
+	pan_transparent_median_ns    i64 = -1
+	pan_transparent_p95_ns       i64 = -1
+	pan_transparent_samples      int
+	pan_opaque_median_ns         i64 = -1
+	pan_opaque_p95_ns            i64 = -1
+	pan_opaque_samples           int
+	zoom_transparent_median_ns   i64 = -1
+	zoom_transparent_p95_ns      i64 = -1
+	zoom_transparent_samples     int
+	zoom_opaque_median_ns        i64 = -1
+	zoom_opaque_p95_ns           i64 = -1
+	zoom_opaque_samples          int
 	resize_to_frame_ns           i64 = -1
 	frame_median_ns              i64 = -1
 	frame_p95_ns                 i64 = -1
@@ -145,6 +159,10 @@ pub mut:
 pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !LiveTraceSummary {
 	rows := os.read_lines(path) or { return err }
 	mut frames := []i64{}
+	mut pan_transparent_samples := []i64{}
+	mut pan_opaque_samples := []i64{}
+	mut zoom_transparent_samples := []i64{}
+	mut zoom_opaque_samples := []i64{}
 	mut summary := LiveTraceSummary{
 		phase_ns: map[string]i64{}
 	}
@@ -192,15 +210,14 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 				summary.process_to_first_input_ns = row.value_us * 1000
 			}
 			'action_presented' {
-				match row.detail {
+				action := row.detail.split(':')[0]
+				match action {
 					'toggle' { summary.toggle_to_frame_ns = row.value_us * 1000 }
 					'switch' { summary.switch_to_frame_ns = row.value_us * 1000 }
-					'pan_transparent' { summary.pan_transparent_to_frame_ns = row.value_us * 1000 }
-					'pan_opaque' { summary.pan_opaque_to_frame_ns = row.value_us * 1000 }
-					'zoom_transparent' {
-						summary.zoom_transparent_to_frame_ns = row.value_us * 1000
-					}
-					'zoom_opaque' { summary.zoom_opaque_to_frame_ns = row.value_us * 1000 }
+					'pan_transparent' { pan_transparent_samples << row.value_us * 1000 }
+					'pan_opaque' { pan_opaque_samples << row.value_us * 1000 }
+					'zoom_transparent' { zoom_transparent_samples << row.value_us * 1000 }
+					'zoom_opaque' { zoom_opaque_samples << row.value_us * 1000 }
 					else {}
 				}
 			}
@@ -208,61 +225,7 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 				summary.prefetch_cached_events++
 			}
 			'pipeline_counters' {
-				summary.counters.requested = row.value_us
-				for item in row.detail.split(',') {
-					counter_parts := item.split(':')
-					if counter_parts.len != 2 {
-						continue
-					}
-					match counter_parts[0] {
-						'displayed' { summary.counters.displayed = counter_parts[1].int() }
-						'skipped' { summary.counters.skipped = counter_parts[1].int() }
-						'coalesced' { summary.counters.coalesced = counter_parts[1].int() }
-						'prefetch_requested' {
-							summary.counters.prefetch_requested = counter_parts[1].int()
-						}
-						'prefetched' { summary.counters.prefetched = counter_parts[1].int() }
-						'prefetch_skipped' {
-							summary.counters.prefetch_skipped = counter_parts[1].int()
-						}
-						'prefetch_coalesced' {
-							summary.counters.prefetch_coalesced = counter_parts[1].int()
-						}
-						'prefetch_cancelled' {
-							summary.counters.prefetch_cancelled = counter_parts[1].int()
-						}
-						'decodes' { summary.counters.decode_count = counter_parts[1].int() }
-						'prefetch_decodes' {
-							summary.counters.prefetch_decodes = counter_parts[1].int()
-						}
-						'cache_hits' { summary.counters.cache_hits = counter_parts[1].int() }
-						'cache_misses' { summary.counters.cache_misses = counter_parts[1].int() }
-						'cache_updates' { summary.counters.cache_updates = counter_parts[1].int() }
-						'cache_evictions' {
-							summary.counters.cache_evictions = counter_parts[1].int()
-						}
-						'cache_invalidations' {
-							summary.counters.cache_invalidations = counter_parts[1].int()
-						}
-						'cache_content_validations' {
-							summary.counters.cache_content_validations = counter_parts[1].int()
-						}
-						'cache_resident_bytes' {
-							summary.counters.cache_bytes = counter_parts[1].int()
-						}
-						'cache_peak_bytes' {
-							summary.counters.cache_peak_bytes = counter_parts[1].int()
-						}
-						'cache_cpu_bytes' {
-							summary.counters.cache_cpu_bytes = counter_parts[1].int()
-						}
-						'cache_renderer_bytes' {
-							summary.counters.cache_renderer_bytes = counter_parts[1].int()
-						}
-						'cache_budget' { summary.counters.cache_budget = counter_parts[1].int() }
-						else {}
-					}
-				}
+				summary.counters = benchmark_counters_from_report(row.detail, int(row.value_us))
 			}
 			'repeat_counters' {
 				for item in row.detail.split(',') {
@@ -309,6 +272,34 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 		summary.frame_median_ns = stats.median_ns
 		summary.frame_p95_ns = stats.p95_ns
 	}
+	if pan_transparent_samples.len > 0 {
+		stats := summarize_samples(pan_transparent_samples)
+		summary.pan_transparent_to_frame_ns = stats.median_ns
+		summary.pan_transparent_median_ns = stats.median_ns
+		summary.pan_transparent_p95_ns = stats.p95_ns
+		summary.pan_transparent_samples = pan_transparent_samples.len
+	}
+	if pan_opaque_samples.len > 0 {
+		stats := summarize_samples(pan_opaque_samples)
+		summary.pan_opaque_to_frame_ns = stats.median_ns
+		summary.pan_opaque_median_ns = stats.median_ns
+		summary.pan_opaque_p95_ns = stats.p95_ns
+		summary.pan_opaque_samples = pan_opaque_samples.len
+	}
+	if zoom_transparent_samples.len > 0 {
+		stats := summarize_samples(zoom_transparent_samples)
+		summary.zoom_transparent_to_frame_ns = stats.median_ns
+		summary.zoom_transparent_median_ns = stats.median_ns
+		summary.zoom_transparent_p95_ns = stats.p95_ns
+		summary.zoom_transparent_samples = zoom_transparent_samples.len
+	}
+	if zoom_opaque_samples.len > 0 {
+		stats := summarize_samples(zoom_opaque_samples)
+		summary.zoom_opaque_to_frame_ns = stats.median_ns
+		summary.zoom_opaque_median_ns = stats.median_ns
+		summary.zoom_opaque_p95_ns = stats.p95_ns
+		summary.zoom_opaque_samples = zoom_opaque_samples.len
+	}
 	summary.frame_samples = frames.len
 	summary.checksum = checksum
 	return summary
@@ -319,16 +310,17 @@ fn new_benchmark_live_trace_with_clock(path string, launch_value string, wall_no
 	launch_ns := benchmark_launch_mono_ns(launch_value, wall_now_us, mono_now_ns, process_launch_ns)
 	launch_mono_us := i64(launch_ns / 1000)
 	mut trace := BenchmarkLiveTrace{
-		path:           path
-		launch_us:      launch_mono_us
-		launch_mono_us: launch_mono_us
-		frame_target:   360
-		warmup_frames:  60
-		phase_trace:    new_startup_phase_trace(launch_ns)
+		path:             path
+		launch_us:        launch_mono_us
+		launch_mono_us:   launch_mono_us
+		frame_target:     1440
+		warmup_frames:    60
+		transform_counts: map[string]int{}
+		phase_trace:      new_startup_phase_trace(launch_ns)
 	}
 	trace.frame_target = os.getenv('IMAGE_UI_BENCHMARK_FRAME_TARGET').int()
 	if trace.frame_target < 2 {
-		trace.frame_target = 360
+		trace.frame_target = 1440
 	}
 	trace.warmup_frames = os.getenv('IMAGE_UI_BENCHMARK_WARMUP_FRAMES').int()
 	if trace.warmup_frames < 0 || trace.warmup_frames >= trace.frame_target {
@@ -390,9 +382,10 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 		trace.write_event('repeat_counters', trace.last_width, trace.last_height, trace.frame_count,
 			trace.left_input_count + trace.right_input_count,
 			'left:${trace.left_input_count},right:${trace.right_input_count}')
+		counters := benchmark_counters_from_metrics(trace.pipeline_metrics, trace.prefetch_metrics,
+			trace.cache_metrics)
 		trace.write_event('pipeline_counters', trace.last_width, trace.last_height, trace.frame_count,
-			trace.pipeline_metrics.requested,
-			'displayed:${trace.pipeline_metrics.displayed},skipped:${trace.pipeline_metrics.skipped},coalesced:${trace.pipeline_metrics.coalesced},prefetch_requested:${trace.prefetch_metrics.requested},prefetched:${trace.prefetch_metrics.prefetched},prefetch_skipped:${trace.prefetch_metrics.skipped},prefetch_coalesced:${trace.prefetch_metrics.coalesced},prefetch_cancelled:${trace.prefetch_metrics.cancelled},decodes:${trace.pipeline_metrics.decode_count},prefetch_decodes:${trace.prefetch_metrics.decode_count},cache_hits:${trace.cache_metrics.hits},cache_misses:${trace.cache_metrics.misses},cache_updates:${trace.cache_metrics.updates},cache_evictions:${trace.cache_metrics.evictions},cache_invalidations:${trace.cache_metrics.invalidations},cache_content_validations:${trace.cache_metrics.content_validations},cache_resident_bytes:${trace.cache_metrics.resident_bytes},cache_peak_bytes:${trace.cache_metrics.peak_bytes},cache_cpu_bytes:${trace.cache_metrics.cpu_bytes},cache_renderer_bytes:${trace.cache_metrics.renderer_bytes},cache_budget:${trace.pipeline_metrics.cache_budget}')
+			counters.requested, benchmark_counters_report(counters))
 		for frame in trace.frames {
 			trace.write_event('frame_interval', frame.width, frame.height, frame.order, frame.interval_us, '')
 		}
@@ -436,11 +429,24 @@ pub fn (mut trace BenchmarkLiveTrace) on_pipeline(metrics ImagePipelineMetrics, 
 	trace.cache_metrics = cache
 }
 
+fn (mut trace BenchmarkLiveTrace) action_detail(action string) string {
+	if action == 'toggle' {
+		trace.toggle_count++
+		return if trace.toggle_count == 1 { action } else { 'toggle_restore' }
+	}
+	if action.starts_with('pan_') || action.starts_with('zoom_') {
+		count := (trace.transform_counts[action] or { 0 }) + 1
+		trace.transform_counts[action] = count
+		return '${action}:${count}'
+	}
+	return action
+}
+
 fn (mut trace BenchmarkLiveTrace) on_key(code ui2.KeyCode) {
 	if !trace.enabled {
 		return
 	}
-	action := benchmark_key_action(code)
+	action := trace.action_detail(benchmark_key_action(code))
 	if code == .left {
 		trace.left_input_count++
 	} else if code == .right {
@@ -474,7 +480,7 @@ fn (mut trace BenchmarkLiveTrace) on_pointer(action string) {
 	trace.write_event('input_pointer', trace.last_width, trace.last_height, trace.frame_count,
 		now_mono_us - trace.launch_mono_us, action)
 	if action != '' {
-		trace.pending_actions << LivePendingAction{ action: action, at_us: now_mono_us }
+		trace.pending_actions << LivePendingAction{ action: trace.action_detail(action), at_us: now_mono_us }
 	}
 }
 

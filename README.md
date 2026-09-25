@@ -66,7 +66,7 @@ The CPU and screen-construction suite needs no display server:
 make benchmark
 ```
 
-The live niri/Wayland smoke records process launch, first content, real key input, resize, Sibling switching, pan, zoom, and Viewer frame-callback cadence. It reports the actual measured viewport and does not treat a 4K image fixture as a 4K viewport:
+The live niri/Wayland smoke records process launch, first content, real key input, resize, Sibling switching, separate repeated pan/zoom samples with per-opacity median/p95, and Viewer frame-callback cadence. It measures the checkerboard toggle separately and restores the transparent pattern before transforms. It reports the actual measured viewport and does not treat a 4K image fixture as a 4K viewport:
 ```bash
 make benchmark-wayland
 ```
@@ -83,7 +83,7 @@ The Viewer uses the generic `ui2.ImageResource` and `ui2.RepeatPattern` contract
 
 ### Measured results
 
-The benchmark reports separate monotonic startup phases for process launch, window creation, font work, UI2 setup, GPU context initialization, first content, first input, and directory completion. The current 4K resource decode is measured through the production pipeline, not a detached metadata helper. The transparency background uses a small repeat tile rather than a full-window raster. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence. The available niri output has a 3840x2160 physical mode but the measured Viewer viewport is recorded separately; a 3840x2094 or other non-exact viewport is not 4K evidence. See the [benchmark methodology and recorded results](./docs/benchmarks.md).
+The benchmark reports separate monotonic startup phases for process launch, window creation, font work, UI2 setup, GPU context initialization, first content, first input, and directory completion. The current 4K resource decode is measured through the production pipeline, not a detached metadata helper. Current-file digest validation runs in a bounded background worker rather than the UI poll path. The transparency background uses a small repeat tile rather than a full-window raster. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence. The available niri output has a 3840x2160 physical mode but the measured Viewer viewport is recorded separately; a 3840x2094 or other non-exact viewport is not 4K evidence. See the [benchmark methodology and recorded results](./docs/benchmarks.md).
 
 ### Aspiration
 
