@@ -476,8 +476,9 @@ pub fn (mut app App) flip_v() {
 }
 
 pub fn (app &App) transparency_background_visible() bool {
-	return app.show_checkerboard && (app.image_resource.state != .ready
-		|| app.image_resource.opacity != .proven_opaque)
+	displayed := app.displayed_image_resource()
+	return app.show_checkerboard && (displayed.state != .ready
+		|| displayed.opacity != .proven_opaque)
 }
 
 pub fn (mut app App) toggle_checkerboard() {

@@ -6,6 +6,8 @@ import ui2
 
 __global image_resource_test_decode_count = 0
 __global image_resource_test_decoder_error = false
+__global image_pipeline_test_decode_started = chan string{cap: 8}
+__global image_pipeline_test_decode_release = chan bool{}
 
 fn image_resource_test_pixels() []u8 {
 	mut pixels := []u8{len: 8}
@@ -25,6 +27,23 @@ fn image_resource_test_decoder(_path string) !DecodedImage {
 	if image_resource_test_decoder_error {
 		return error('test decode failure')
 	}
+	return DecodedImage{
+		width:    2
+		height:   1
+		channels: 4
+		pixels:   image_resource_test_pixels()
+		opacity:  .has_alpha
+	}
+}
+
+fn image_pipeline_test_gated_decoder(path string) !DecodedImage {
+	image_resource_test_decode_count++
+	image_pipeline_test_decode_started <- path
+	_ = <-image_pipeline_test_decode_release
+	return image_resource_test_ready_decoded()
+}
+
+fn image_resource_test_ready_decoded() DecodedImage {
 	return DecodedImage{
 		width:    2
 		height:   1
@@ -293,6 +312,147 @@ fn test_pipeline_worker_decodes_off_coordinator() {
 	assert pipeline.metrics.decode_count == 1
 }
 
+fn test_cancelled_user_decode_stops_at_decoder_boundary_and_latest_wins() {
+	root := os.join_path(os.temp_dir(), 'image-ui-user-cancel-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	first_path := os.join_path(root, 'first.png')
+	latest_path := os.join_path(root, 'latest.png')
+	os.write_file(first_path, 'first') or { panic(err) }
+	os.write_file(latest_path, 'latest') or { panic(err) }
+	image_pipeline_test_decode_started = chan string{cap: 2}
+	image_pipeline_test_decode_release = chan bool{}
+	image_resource_test_decode_count = 0
+	mut pipeline := new_image_pipeline(image_pipeline_test_gated_decoder)
+	first := pipeline.request(first_path, 'first')
+	assert first.path == first_path
+	mut started := ''
+	select {
+		started = <-image_pipeline_test_decode_started {
+		}
+		5 * time.second {
+			panic('first user decode did not start')
+		}
+	}
+	assert started == first_path
+	latest := pipeline.request(latest_path, 'latest')
+	assert pipeline.pending_count() == 2
+	assert pipeline.metrics.max_pending == 2
+	image_pipeline_test_decode_release <- true
+	mut obsolete := ImagePipelineResult{}
+	select {
+		obsolete = <-pipeline.result_ch {
+		}
+		5 * time.second {
+			panic('obsolete user decode did not finish')
+		}
+	}
+	assert obsolete.cancelled
+	pipeline.result_ch <- obsolete
+	assert pipeline.poll().len == 0
+	assert pipeline.active_request.generation == latest.generation
+	select {
+		started = <-image_pipeline_test_decode_started {
+		}
+		5 * time.second {
+			panic('latest user decode did not start')
+		}
+	}
+	assert started == latest_path
+	image_pipeline_test_decode_release <- true
+	mut latest_result := ImagePipelineResult{}
+	select {
+		latest_result = <-pipeline.result_ch {
+		}
+		5 * time.second {
+			panic('latest user decode did not finish')
+		}
+	}
+	pipeline.result_ch <- latest_result
+	results := pipeline.poll()
+	assert results.len == 1
+	assert results[0].request.generation == latest.generation
+	assert results[0].resource.source == latest_path
+	assert pipeline.metrics.cancelled == 1
+	assert pipeline.metrics.rejected == 1
+	assert image_resource_test_decode_count == 2
+}
+
+fn test_cancelled_prefetch_never_commits_and_pumps_latest_context() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-cancel-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	first_path := os.join_path(root, 'first.png')
+	latest_path := os.join_path(root, 'latest.png')
+	os.write_file(first_path, 'first') or { panic(err) }
+	os.write_file(latest_path, 'latest') or { panic(err) }
+	image_pipeline_test_decode_started = chan string{cap: 2}
+	image_pipeline_test_decode_release = chan bool{}
+	image_resource_test_decode_count = 0
+	mut pipeline := new_image_pipeline(image_pipeline_test_gated_decoder)
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 1
+		direction:       1
+		current_path:    first_path
+	})
+	mut started := ''
+	select {
+		started = <-image_pipeline_test_decode_started {
+		}
+		5 * time.second {
+			panic('first prefetch decode did not start')
+		}
+	}
+	assert started == first_path
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+		scan_generation: 2
+		direction:       1
+		current_path:    latest_path
+	})
+	assert pipeline.has_prefetch_active()
+	assert pipeline.prefetch_pending_count() == 2
+	image_pipeline_test_decode_release <- true
+	mut obsolete := ImagePipelineResult{}
+	select {
+		obsolete = <-pipeline.prefetch.result_ch {
+		}
+		5 * time.second {
+			panic('obsolete prefetch decode did not finish')
+		}
+	}
+	assert obsolete.cancelled
+	pipeline.prefetch.result_ch <- obsolete
+	assert pipeline.poll().len == 0
+	assert !pipeline.cache.contains(first_path)
+	select {
+		started = <-image_pipeline_test_decode_started {
+		}
+		5 * time.second {
+			panic('latest prefetch decode did not start')
+		}
+	}
+	assert started == latest_path
+	pipeline.prefetch.cancel(false)
+	assert pipeline.prefetch.metrics.cancelled >= 2
+	image_pipeline_test_decode_release <- true
+	mut latest := ImagePipelineResult{}
+	select {
+		latest = <-pipeline.prefetch.result_ch {
+		}
+		5 * time.second {
+			panic('latest prefetch decode did not finish')
+		}
+	}
+	assert latest.cancelled
+	pipeline.prefetch.result_ch <- latest
+	pipeline.poll()
+	assert !pipeline.cache.contains(latest_path)
+}
+
 fn test_pipeline_rejects_stale_completion_and_keeps_latest_request() {
 	mut pipeline := new_manual_image_pipeline()
 	first := pipeline.request('a.png', 'test')
@@ -323,6 +483,30 @@ fn test_pipeline_coalesces_rapid_input_to_one_queued_request() {
 	assert pipeline.metrics.skipped == 99
 	assert pipeline.metrics.coalesced == 99
 	assert pipeline.current_request().generation == 101
+}
+
+fn test_new_cache_miss_coalesces_pending_cache_hit() {
+	root := os.join_path(os.temp_dir(), 'image-ui-ready-coalesce-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	paths := image_resource_test_siblings(root, 2)
+	mut pipeline := new_manual_image_pipeline()
+	first_signature := sibling_file_content_signature(paths[0])
+	assert pipeline.cache.put(paths[0], first_signature, image_resource_test_ready(paths[0], 'first'), 8, 8)
+	first := pipeline.request(paths[0], 'first')
+	assert pipeline.has_ready
+	latest := pipeline.request(paths[1], 'latest')
+	assert first.generation < latest.generation
+	assert !pipeline.has_ready
+	assert pipeline.has_active
+	assert pipeline.metrics.skipped == 1
+	assert pipeline.metrics.coalesced == 1
+	assert pipeline.complete(latest.generation, latest.path, image_resource_test_ready(paths[1], 'latest'))
+	results := pipeline.poll()
+	assert results.len == 1
+	assert results[0].request.path == paths[1]
 }
 
 fn test_resident_right_key_repeat_displays_every_sibling_in_order() {
@@ -390,7 +574,7 @@ fn test_key_repeat_faster_than_decode_stays_bounded_and_latest_request_wins() {
 	assert app.image_pipeline.pending_count() == 2
 	assert app.image_pipeline.metrics.max_pending == 2
 	assert app.image_pipeline.prefetch_pending_count() <= 3
-	assert app.image_pipeline.prefetch_metrics.skipped <= app.image_pipeline.prefetch_metrics.requested
+	assert app.image_pipeline.prefetch_metrics().skipped <= app.image_pipeline.prefetch_metrics().requested
 	assert app.image_pipeline.metrics.max_total_pending <= 5
 	assert app.core.target_path == paths[100]
 	first := app.image_pipeline.active_request

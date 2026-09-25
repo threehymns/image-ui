@@ -18,33 +18,34 @@ pub const error_text_hex = u32(0xdc5a5a)
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	core                          App
-	image_loader                  ImageResourceLoader
-	image_pipeline                ImagePipeline
-	sibling_cache_budget_bytes    int
-	sibling_cache_neighbor_radius int = -1
-	window_ready                  bool
-	is_dragging                   bool
-	drag_prev_x                   f64
-	drag_prev_y                   f64
-	last_click_time               i64
-	last_click_x                  f64
-	last_click_y                  f64
-	scanned_dir                   string
-	scanner_ch                    chan SiblingBatch
-	has_scanner_ch                bool
-	scanner_cancel                chan bool
-	has_scanner_cancel            bool
-	requested_window_w            int
-	requested_window_h            int
-	navigation_direction          int
-	transparency_pattern          ui2.RepeatPattern
-	benchmark_live                BenchmarkLiveTrace
+	core                              App
+	image_loader                      ImageResourceLoader
+	image_pipeline                    ImagePipeline
+	sibling_cache_budget_bytes        int
+	sibling_cache_neighborhood_radius int = -1
+	window_ready                      bool
+	native_window_ready               bool
+	is_dragging                       bool
+	drag_prev_x                       f64
+	drag_prev_y                       f64
+	last_click_time                   i64
+	last_click_x                      f64
+	last_click_y                      f64
+	scanned_dir                       string
+	scanner_ch                        chan SiblingBatch
+	has_scanner_ch                    bool
+	scanner_cancel                    chan bool
+	has_scanner_cancel                bool
+	requested_window_w                int
+	requested_window_h                int
+	navigation_direction              int
+	transparency_pattern              ui2.RepeatPattern
+	benchmark_live                    BenchmarkLiveTrace
 }
 
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
 pub fn (mut app ViewerApp) update_window_title() {
-	if !app.window_ready {
+	if !app.window_ready || !app.native_window_ready {
 		return
 	}
 	if app.core.has_image {
@@ -120,10 +121,10 @@ fn (mut app ViewerApp) ensure_image_pipeline() {
 	} else if !app.image_pipeline.manual && voidptr(app.image_pipeline.decoder) == unsafe { nil } {
 		app.image_pipeline.decoder = app.image_loader.decoder
 	}
-	if app.sibling_cache_neighbor_radius >= 0 {
-		app.image_pipeline.neighbor_radius = app.sibling_cache_neighbor_radius
+	if app.sibling_cache_neighborhood_radius >= 0 {
+		app.image_pipeline.sibling_neighborhood_radius = app.sibling_cache_neighborhood_radius
 	} else if pipeline_created {
-		app.image_pipeline.neighbor_radius = configured_sibling_cache_neighbor_radius()
+		app.image_pipeline.sibling_neighborhood_radius = configured_sibling_cache_neighborhood_radius()
 	}
 	if app.sibling_cache_budget_bytes > 0 {
 		app.image_pipeline.set_cache_budget(app.sibling_cache_budget_bytes)
@@ -149,7 +150,7 @@ fn (mut app ViewerApp) sync_sibling_cache_retention() {
 		})
 		return
 	}
-	mut radius := app.image_pipeline.neighbor_radius
+	mut radius := app.image_pipeline.sibling_neighborhood_radius
 	if radius < 0 {
 		radius = 0
 	}
@@ -194,23 +195,29 @@ pub fn (mut app ViewerApp) poll_image_pipeline() {
 	if !app.image_pipeline.configured {
 		return
 	}
+	current_source := app.core.displayed_image_resource().source
 	results := app.image_pipeline.poll()
 	for result in results {
 		if app.core.commit_image_request(result.request, result.resource) {
 			if result.resource.state == .ready {
-				app.image_pipeline.set_resident(result.resource)
+				app.image_pipeline.set_resident_with_signature(result.resource, result.signature)
 				app.image_pipeline.mark_displayed(result.request)
 			}
 			app.image_pipeline.mark_committed(result.request)
 			app.update_window_title()
 		}
 	}
+	if current_source.len > 0 && (!app.core.has_pending_image()
+		|| app.core.pending_image_request.path == current_source)
+		&& app.image_pipeline.take_current_resource_invalidated() {
+		app.request_image(current_source, 'file-change')
+	}
 	prefetched_path := app.image_pipeline.take_prefetched_path()
 	$if viewer_benchmark ? {
 		if prefetched_path.len > 0 {
 			app.benchmark_live.on_prefetch(prefetched_path)
 		}
-		app.benchmark_live.on_pipeline(app.image_pipeline.metrics, app.image_pipeline.prefetch_metrics, app.image_pipeline.cache.metrics)
+		app.benchmark_live.on_pipeline(app.image_pipeline.metrics, app.image_pipeline.prefetch_metrics(), app.image_pipeline.cache.metrics)
 	}
 	app.sync_sibling_cache_retention()
 }
@@ -557,6 +564,14 @@ fn parse_scroll_event(event string) ?(f64, f64, f64) {
 // negative delta_y zooms out. The factor follows zoom_step_factor ^ delta_y
 // so a discrete notch (|delta| == 1) reproduces the legacy single-step zoom
 // exactly, while fractional high-resolution trackpad deltas scale smoothly.
+fn (app &ViewerApp) benchmark_image_variant() string {
+	return if app.core.displayed_image_resource().opacity == .proven_opaque {
+		'opaque'
+	} else {
+		'transparent'
+	}
+}
+
 pub fn (mut app ViewerApp) handle_scroll(cursor_x f64, cursor_y f64, delta_y f64) {
 	if !app.core.has_image {
 		return
@@ -573,7 +588,7 @@ pub fn (mut app ViewerApp) handle_event(event string) {
 		x, y, delta := parse_scroll_event(event) or { return }
 		app.handle_scroll(x, y, delta)
 		$if viewer_benchmark ? {
-			app.benchmark_live.on_pointer('zoom')
+			app.benchmark_live.on_pointer('zoom_${app.benchmark_image_variant()}')
 		}
 		return
 	}
@@ -615,7 +630,7 @@ pub fn (mut app ViewerApp) handle_event(event string) {
 	}
 	$if viewer_benchmark ? {
 		if phase == 'drag' {
-			app.benchmark_live.on_pointer('pan')
+			app.benchmark_live.on_pointer('pan_${app.benchmark_image_variant()}')
 		}
 	}
 }
@@ -629,8 +644,10 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 		if app.benchmark_live.enabled {
 			if e.code == .p {
 				app.core.pan(24.0, 24.0)
+				app.benchmark_live.on_pointer('pan_${app.benchmark_image_variant()}')
 			} else if e.code == .z {
 				app.core.zoom_in()
+				app.benchmark_live.on_pointer('zoom_${app.benchmark_image_variant()}')
 			}
 		}
 	}
@@ -725,7 +742,7 @@ const global_viewer_app = &ViewerApp{}
 $if viewer_benchmark ? {
 	fn handle_ui2_startup_phase(phase ui2.StartupPhase, at_ns u64) {
 		mut app := unsafe { global_viewer_app }
-		app.benchmark_live.mark_phase(ui2.startup_phase_name(phase), at_ns)
+		app.benchmark_live.mark_phase(phase, at_ns)
 	}
 
 	fn handle_ui2_frame_complete() {
@@ -756,6 +773,9 @@ fn handle_viewer_drop(e ui2.DropEvent) {
 
 fn main() {
 	$if viewer_benchmark ? {
+		benchmark_process_launch_ns = time.sys_mono_now()
+	}
+	$if viewer_benchmark ? {
 		benchmark_main()
 	} $else {
 		mut cmd := build_cli_command()
@@ -779,6 +799,7 @@ pub fn launch_viewer(image_path string) {
 	app.has_scanner_cancel = false
 	app.requested_window_w = 1024
 	app.requested_window_h = 768
+	app.native_window_ready = true
 	$if viewer_benchmark ? {
 		app.benchmark_live = new_benchmark_live_trace()
 		ui2.set_startup_phase_handler(handle_ui2_startup_phase)

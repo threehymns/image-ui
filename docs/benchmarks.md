@@ -56,12 +56,13 @@ On Linux the runner executes Linux checks and explicitly does not claim AppKit, 
 | --- | --- | --- |
 | `alpha.tga` | 64x64 | Four deterministic alpha levels |
 | `opaque.bmp` | 96x64 | Small opaque image decode |
-| `large-4k.bmp` | 3840x2160 | 4K-class metadata decode and live rendering |
+| `large-4k.bmp` | 3840x2160 | 4K-class opaque resource and live rendering |
+| `large-alpha.tga` | 3840x2160 | 4K-class transparent resource and live rendering |
 | `large-4k-previous.bmp` | 3840x2160 | 4K immediate previous Sibling |
 | `large-4k_next.bmp` | 3840x2160 | 4K immediate next Sibling |
 | `siblings/sibling-000.bmp` through `sibling-127.bmp` | 96x64 each | Directory discovery and adjacent navigation |
 
-The 128 Sibling entries are hard links to the opaque fixture. They have independent paths for natural sorting and navigation without consuming 128 copies of the image. The two 4K Neighbor files are hard links to the 4K fixture, so the live target has a full-resolution previous and next Sibling. A user-supplied fixture directory is preserved; the suite only replaces its reserved `alpha.tga`, `opaque.bmp`, `large-4k*.bmp`, and `sibling-*.bmp` files.
+The 128 Sibling entries are hard links to the opaque fixture. They have independent paths for natural sorting and navigation without consuming 128 copies of the image. The two 4K Sibling files are hard links to the opaque 4K fixture, while `large-alpha.tga` supplies the transparent live target. A user-supplied fixture directory is preserved; the suite replaces its reserved `alpha.tga`, `opaque.bmp`, `large-alpha.tga`, `large-4k*.bmp`, and `sibling-*.bmp` files.
 
 ## Headless measurements
 
@@ -69,12 +70,13 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 | Case | What the timer covers |
 | --- | --- |
-| `image_load_alpha`, `image_load_opaque`, `image_load_4k` | File read, `stbi` metadata decode, and decode free through the production `load_image_metadata` seam; each row reports one decoder invocation |
+| `image_pipeline_load_alpha`, `image_pipeline_load_opaque`, `image_pipeline_load_4k` | Production `ImagePipeline` request, worker decode, resource normalization, and cache accounting |
+| `image_worker_load_alpha`, `image_worker_load_opaque`, `image_worker_load_4k` | The shared cancellation-aware worker resource-load seam, including one decoder invocation |
 | `sibling_cache_cold`, `sibling_cache_warm` | Full-resolution decode, signature capture, cache insertion, and resident lookup at the selected byte budget |
 | `sibling_cache_4k_cold`, `sibling_cache_4k_warm` | The same cache path with the 4K fixture and a 256 MiB budget |
-| `sibling_cache_invalidation` | A changed file signature removes the resident entry and reports the invalidation/miss behavior |
+| `sibling_cache_invalidation` | A changed file identity removes the resident entry; periodic full-file SHA-256 validation catches same-size rewrites when portable stat data is unchanged |
 | `sibling_discovery` | Spawn, complete directory enumeration, natural sort, channel batches, and final batch through the current scanner |
-| `sibling_navigation` | Playlist step plus the current synchronous metadata decode |
+| `sibling_navigation` | Playlist step plus the production resource pipeline decode and result handoff |
 | `resident_sibling_switch` | One resident small-Sibling switch from key event through cache lookup, commit, and screen construction |
 | `resident_sibling_switch_4k` | One resident 3840x2160 Sibling switch through cache lookup, commit, and screen construction; decode setup is outside the timer |
 | `key_repeat_resident_right`, `key_repeat_resident_left` | Deterministic 16-key resident sequences that verify every available Sibling is displayed in order |
@@ -87,15 +89,15 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 | `pattern_tile` | Creation of the 32x32 logical repeat tile containing 16 px cells |
 | `screen_construct_4k` | Current UI2 element construction and repeat-tile reuse |
 | `screen_resize_to_4k` | Three screen builds needed to move from 1920x1080 to 3840x2160 |
-| `startup_cpu_cold`, `startup_cpu_warm` | Labeled CPU startup-path rows: `new_app`, 4K metadata decode, state setup, and 1024x768 screen construction; neither is process-launch time |
+| `startup_cpu_cold`, `startup_cpu_warm` | Production resource decode, state setup, and 1024x768 screen construction; neither is process-launch time |
 
 `screen_construct_4k`, the four `pan_4k_*`/`zoom_4k_*` rows, `frame_prepare_4k`, and `toggle_checkerboard_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements. The resident-switch rows likewise measure the state transition and UI2 element construction; their fixture decode and cache population happen before the stopwatch starts and are identified separately from measured decode counters.
 
-Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Neighborhood candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
+Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations/content validations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Neighborhood candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. Cache identity checks use portable stat fields; periodic current-resource validation reads the complete file for SHA-256 comparison, so validation is not claimed to be I/O-free. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
 
 ### Startup phase trace
 
-The headless suite also emits a phase-order smoke table with monotonic timestamps for process launch, window creation, font work, UI2 setup, GPU setup, first content, first input, and directory completion. It validates the ordering seam without claiming to measure a real process launch or GPU present. The live suite records the same phase names from the running Viewer process. Font discovery, metrics, and symbol fallback preparation are scheduled after context creation and run in the background; the first-content mark is emitted only after an image resource is ready and the completed UI2 frame callback.
+The headless suite also emits a phase-order smoke table with monotonic timestamps for process launch, window creation, font work, UI2 setup, GPU context initialization, first content, first input, and directory completion. The benchmark process captures its launch timestamp at the first `main` entry, before benchmark dispatch. The live shell records `IMAGE_UI_BENCHMARK_LAUNCH_US` as Unix microseconds before spawning the Viewer. At trace construction, the benchmark samples the V wall clock (`time.utc().unix_micro()` in the current toolchain) and `time.sys_mono_now()`, converts the shell instant onto the monotonic timeline, and uses that converted value for phase and first-content/input deltas, including time before `main`. Missing, zero, malformed, future, or unrepresentable launch values fall back to the earliest safe in-process timestamp. The live suite records the same typed phase names from the running Viewer process and rejects duplicate or coalesced marks. Font discovery, metrics, and symbol fallback preparation are scheduled after context creation and run in the background; the first-content mark is emitted only after an image resource is ready and the completed UI2 frame callback.
 
 ## Cache controls
 
@@ -139,7 +141,7 @@ The 4K resident-switch row keeps two 4K resources resident: 132,710,400 bytes of
 
 ## Live Wayland smoke
 
-Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen, complete directory scan, and a `prefetch_cached` event for the next Sibling, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300. It records cold/warm process launches, first content, first input, resize, toggle, resident switch, pan, zoom, sustained Left/Right input, frame cadence, decode counts, cache metrics, and prefetch counters.
+Each live run starts the benchmark build with a 4K target, waits for the first content screen, complete directory scan, and a `prefetch_cached` event for the next Sibling, then asks niri to resize the focused tiled window. The harness runs separate opaque (`large-4k.bmp`) and transparent (`large-alpha.tga`) targets for both cold and warm process labels, so pan and zoom actions are reported for both resource paths. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300. It records process launches, first content, first input, resize, toggle, resident switch, separate transparent/opaque pan and zoom, sustained Left/Right input, frame cadence, decode counts, cache metrics, and prefetch counters.
 
 The harness sends real Wayland key input through `wtype` and verifies each action before the next run:
 
@@ -148,13 +150,13 @@ The harness sends real Wayland key input through `wtype` and verifies each actio
 - `p` is available only in the benchmark build and calls the current `App.pan` path.
 - `z` is available only in the benchmark build and calls the current `App.zoom_in` path.
 
-The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, sustained Left/Right input counts, Neighborhood prefetch counters, decode counts, cache hit/miss/update/eviction/invalidation counters, cache byte budgets, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
+The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, sustained Left/Right input counts, Neighborhood prefetch counters, decode counts, cache hit/miss/update/eviction/invalidation/content-validation counters, cache byte budgets, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
 
 The cadence and `switch_to_frame` values are intervals between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame. The live report prints `viewport_exact_3840x2160`, `post_present_fence`, and `target_4k60` explicitly; a false exact-viewport result or unavailable fence is a limitation, not a pass.
 
 ## Recorded baseline
 
-Recorded on 2026-09-25 from the #18 implementation on branch `t3code/15-transparency`. The benchmark output records the exact source commit used for each run.
+The numeric tables below are historical measurements from the pre-review-fix benchmark implementation. They are retained for comparison and are not presented as measurements of the current cancellation, validation, typed-startup, or separate transparent/opaque live harness. Re-run the checked-in commands on the target hardware before making new performance claims. The benchmark output records the exact source commit used for each run.
 
 - OS: Linux 7.1.8-arch1-3, x86_64
 - CPU: Intel Core i7-8565U at 1.80 GHz, 8 logical CPUs
@@ -237,12 +239,12 @@ Recorded on 2026-09-25 from commit `3abdad6` with `make benchmark-wayland` on ni
 | Window creation | 79.20 | 115.43 |
 | Font work scheduled | 0.10 | 0.14 |
 | UI2 setup | 0.09 | 0.12 |
-| GPU setup | 79.23 | 115.51 |
+| GPU context initialization | 79.23 | 115.51 |
 | First content | 1764.56 | 1941.09 |
 | First input | 1933.09 | 2105.12 |
 | Directory completion | 129.92 | 181.83 |
 
-The observed order was `process_launch > ui2_setup > font_work > window_creation > gpu_setup > directory_completion > first_content > first_input` for both runs. The live checksum was `df304cfd721b348c`; the measured viewport was 3840x2094. These are local timing samples, not a 10 ms, 4K, or post-present GPU guarantee.
+The observed order was `process_launch > ui2_setup > font_work > window_creation > gpu_context_initialization > directory_completion > first_content > first_input` for both runs. The live checksum was `df304cfd721b348c`; the measured viewport was 3840x2094. These are local timing samples, not a 10 ms, 4K, or post-present GPU guarantee.
 
 ## Diagnostics versus repeatable results
 
@@ -261,27 +263,29 @@ The current live harness cannot prove presented-frame GPU time. A later resource
 
 ## Final #26 validation report
 
-Validation source: the `t3code/15-integration` branch with UI2 submodule `e740b6b09d8a`; each benchmark’s build output records the exact commit. All timing thresholds remain reporting-only in hosted CI. The final report is intentionally split into measured evidence, targets, and unverified platform work.
+Validation source: the `t3code/15-review-fixes` branch with UI2 submodule `f9cb3a2`; each benchmark’s build output records the exact source state. All timing thresholds remain reporting-only in hosted CI. The final report is intentionally split into measured evidence, targets, and unverified platform work.
 
 ### Commands and evidence
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Root correctness | `make test` | 16 test files passed, including deterministic checkerboard phase/clipping, alpha reference compositing, resize, transform, decode-count, cache-invalidation, and repeat coverage |
-| Root build | `make build` and `make build-wayland` | Passed on the Linux host |
+| Root correctness | `make test` | 16/16 test files passed, including checkerboard phase/clipping, alpha compositing, resize, transform, decode-count, cache-invalidation, and repeat coverage |
+| Root builds | `make build`, `make build-wayland`, and `make build-x11` | Passed on the Linux host |
 | Headless benchmark | `make benchmark BENCHMARK_ARGS="--warmup 2 --iterations 10 --cache both"` | Passed; fixed-iteration checksum and counter status was `ok` for every row |
 | Benchmark compile | `make benchmark-build` | Passed |
-| Live Wayland | `make benchmark-wayland` | Passed cold and warm niri runs; evidence below |
+| Live Wayland | `make benchmark-wayland` | Not run on this host because no Wayland display socket was available; historical evidence is retained below |
 | Linux UI2 checks | `make -C ui2 check-linux` | Passed |
-| Focused UI2 contracts | `v test ui2/ui/image_resource_test.v ui2/ui/repeat_pattern_test.v` | 2 passed |
-| UI2 cross source checks | `make -C ui2 check-macos check-ios check-android check-windows` | Passed |
-| Custom cross checks | `make -C ui2 check-custom-macos check-custom-windows` | Blocked by stale `ui_custom_test.v` calls to the two-argument `handle_key_down`; no Viewer contract source error was reported |
-| Native contract inventory | `./benchmarks/native_contract_check.sh --commands` | Printed runnable AppKit, UIKit, Windows, and Linux commands |
-| Shell validation | `shellcheck benchmarks/wayland_smoke.sh benchmarks/native_contract_check.sh` | Passed after fixing the `CDPATH` assignment warning |
+| Focused UI2 contracts | `v test ui2/ui/image_resource_test.v ui2/ui/repeat_pattern_test.v ui2/ui/startup_phase_test.v ui2/windows/ui_windows_test.v` | 3 passed, 1 Windows runtime test skipped on Linux |
+| UI2 cross source checks | `make -C ui2 check-linux check-macos check-ios check-windows` | Passed |
+| Custom cross checks | `make -C ui2 check-custom-macos check-custom-windows` | Not run on this Linux host; native visual/toolchain verification remains unavailable |
+| Native contract inventory and Linux check | `./benchmarks/native_contract_check.sh --commands` and `./benchmarks/native_contract_check.sh` | Printed all native commands; Linux check passed |
+| Shell validation | `shellcheck benchmarks/wayland_smoke.sh benchmarks/native_contract_check.sh` | Passed |
 
 The root benchmark includes separate `pan_4k_transparent`, `pan_4k_opaque`, `zoom_4k_transparent`, and `zoom_4k_opaque` rows. Those rows measure Viewer/UI2 element construction at 3840x2160, not GPU presentation. The `decodes` and `prefetch decodes` columns count decoder invocations; cache hits and prefetched resources do not increment them. The cache columns expose hits, misses, updates, evictions, invalidations, resident/peak bytes, CPU/renderer bytes, and the configured budget. `checksum samples` equals the configured measured iteration count and `checksum mismatches` is zero for a passing row.
 
-### Live Wayland evidence
+### Historical live Wayland evidence
+
+The following table is retained from the prior niri run. It is not a measurement of the current review-fix worktree, which was not rerun because this host had no Wayland display socket.
 
 | Measurement | Cold process | Warm process |
 | --- | ---: | ---: |
@@ -305,11 +309,11 @@ The root benchmark includes separate `pan_4k_transparent`, `pan_4k_opaque`, `zoo
 | Samples after warmup | 300 | 300 |
 | Trace checksum | `d5ba15f0ab240e98` | `d5ba15f0ab240e98` |
 
-The niri host exposes a 3840x2160 physical eDP mode, but the measured Viewer viewport is 3840x2094 because the compositor/window configuration reserves 66 vertical pixels. UI2 exposes no post-present fence or GPU timestamp. Consequently these results are build-callback cadence and action-to-build evidence only. The 4K60 p95 target and 8.3 ms headroom goal are **not claimed as passed**.
+The historical niri host exposed a 3840x2160 physical eDP mode, but the measured Viewer viewport was 3840x2094 because the compositor/window configuration reserved 66 vertical pixels. UI2 exposes no post-present fence or GPU timestamp. Consequently these results are build-callback cadence and action-to-build evidence only. The 4K60 p95 target and 8.3 ms headroom goal are **not claimed as passed**.
 
 ### Acceptance audit and platform gaps
 
 - Generic UI2 `ImageResource`/`RepeatPattern` contracts, the Viewer’s single non-platform-branched path, legacy path retention, cache/decode instrumentation, transparent/opaque transform rows, repeat rows, startup phases, and deterministic semantic tests are covered.
-- AppKit, UIKit, and Windows source/contract tests are present in UI2 and their runnable commands are listed above, but native runtime builds and screenshots were not run on this Linux host. The non-custom macOS, iOS, Android, and Windows source checks pass; custom macOS/Windows checks are blocked by the stale two-call `handle_key_down` test calls, and the custom example build is blocked by the existing V script’s `string.join` usage. Windows/Linux cross-build availability is therefore a source/toolchain check, not a native visual pass.
+- AppKit, UIKit, and Windows source/contract tests are present in UI2 and their runnable commands are listed above, but native runtime builds and screenshots were not run on this Linux host. The macOS, iOS, and Windows source checks run for this fix pass; custom macOS/Windows checks and native visual verification remain unavailable here, with the existing stale custom test calls noted in the prior validation record. Cross-build availability is therefore a source/toolchain check, not a native visual pass.
 - The legacy path remains documented because native runtime/visual verification is incomplete; removing it would weaken supported-backend compatibility.
-- The 4K60 target requires a future exact 3840x2160 viewport and post-present fence measurement. The current checked-in evidence does not satisfy that hardware/fence prerequisite.
+- The 4K60 target requires a future exact 3840x2160 viewport and post-present fence measurement. The available checked-in evidence does not satisfy that hardware/fence prerequisite.

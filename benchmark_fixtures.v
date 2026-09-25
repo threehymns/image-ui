@@ -12,6 +12,7 @@ pub:
 	alpha                  string
 	opaque                 string
 	large_4k               string
+	large_alpha            string
 	large_sibling_previous string
 	large_sibling_next     string
 	siblings               string
@@ -40,11 +41,15 @@ pub fn generate_benchmark_fixtures(root string, count int) !BenchmarkFixtures {
 	alpha := os.join_path(root, 'alpha.tga')
 	opaque := os.join_path(root, 'opaque.bmp')
 	large := os.join_path(root, 'large-4k.bmp')
+	large_alpha := os.join_path(root, 'large-alpha.tga')
 	large_previous := os.join_path(root, 'large-4k-previous.bmp')
 	large_next := os.join_path(root, 'large-4k_next.bmp')
 	os.write_bytes(alpha, encode_alpha_tga(64, 64)) or { return err }
 	os.write_bytes(opaque, encode_opaque_bmp(96, 64, 17)) or { return err }
 	os.write_bytes(large, encode_opaque_bmp(benchmark_large_width, benchmark_large_height, 31)) or {
+		return err
+	}
+	os.write_bytes(large_alpha, encode_alpha_tga(benchmark_large_width, benchmark_large_height)) or {
 		return err
 	}
 	for path in [large_previous, large_next] {
@@ -68,6 +73,7 @@ pub fn generate_benchmark_fixtures(root string, count int) !BenchmarkFixtures {
 		alpha:                  alpha
 		opaque:                 opaque
 		large_4k:               large
+		large_alpha:            large_alpha
 		large_sibling_previous: large_previous
 		large_sibling_next:     large_next
 		siblings:               siblings

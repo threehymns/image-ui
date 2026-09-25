@@ -34,7 +34,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 "$binary" --prepare-fixtures "$tmp/fixtures" >"$tmp/fixtures.log"
-target="$tmp/fixtures/large-4k.bmp"
 prefetch_target='large-4k_next.bmp'
 repeat_keys=${IMAGE_UI_BENCHMARK_REPEAT_KEYS:-8}
 if (( repeat_keys < 1 )); then
@@ -59,14 +58,23 @@ wait_for_trace() {
 
 run_smoke() {
 	cache=$1
-	trace="$tmp/wayland-$cache.tsv"
-	log="$tmp/wayland-$cache.log"
+	opacity=$2
+	if [[ $opacity == transparent ]]; then
+		target="$tmp/fixtures/large-alpha.tga"
+		expected_opacity=transparent
+	else
+		target="$tmp/fixtures/large-4k.bmp"
+		expected_opacity=opaque
+	fi
+	trace="$tmp/wayland-$cache-$opacity.tsv"
+	log="$tmp/wayland-$cache-$opacity.log"
 	before_ids=$(niri msg --json windows | jq -c '[.[].id]')
 	rm -f "$trace" "$trace.resize_request_us" "$trace.resize_request_width"
 	launch_us=$(date +%s%6N)
 	IMAGE_UI_BENCHMARK_CACHE="$cache" \
 	IMAGE_UI_BENCHMARK_TRACE="$trace" \
 	IMAGE_UI_BENCHMARK_LAUNCH_US="$launch_us" \
+	IMAGE_UI_BENCHMARK_EXPECTED_OPACITY="$expected_opacity" \
 	IMAGE_UI_BENCHMARK_FRAME_TARGET=360 \
 	IMAGE_UI_BENCHMARK_WARMUP_FRAMES=60 \
 	IMAGE_UI_BENCHMARK_REPEAT_KEYS="$repeat_keys" \
@@ -132,5 +140,7 @@ run_smoke() {
 	cat "$log"
 }
 
-run_smoke cold
-run_smoke warm
+run_smoke cold opaque
+run_smoke cold transparent
+run_smoke warm opaque
+run_smoke warm transparent

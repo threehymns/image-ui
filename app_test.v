@@ -3,6 +3,7 @@ module main
 import os
 import math
 import time
+import ui2
 
 fn test_app_initialization_and_load() {
 	mut app := new_app()
@@ -95,6 +96,43 @@ fn test_app_actions_rotation_and_flip() {
 	assert app.viewport.flip_v
 }
 
+fn test_transparency_background_follows_displayed_resource_during_pending_request() {
+	mut app := new_app()
+	app.set_image_loaded('opaque.png', 10, 10)
+	app.image_resource = ui2.ready_image_resource('opaque', 'opaque.png', ui2.ImageResourceInput{
+		width:    1
+		height:   1
+		channels: 4
+		pixels:   []u8{len: 4, init: 255}
+	}, .proven_opaque)
+	app.displayed_resource = app.image_resource
+	app.image_resource = ui2.loading_image_resource('pending-opaque', 'next.png')
+	assert !app.transparency_background_visible()
+
+	app.set_image_loaded('alpha.png', 10, 10)
+	app.image_resource = ui2.ready_image_resource('alpha', 'alpha.png', ui2.ImageResourceInput{
+		width:    1
+		height:   1
+		channels: 4
+		pixels:   []u8{len: 4, init: 255}
+	}, .has_alpha)
+	app.displayed_resource = app.image_resource
+	app.image_resource = ui2.loading_image_resource('pending-alpha', 'next.png')
+	assert app.transparency_background_visible()
+}
+
+fn test_transparency_background_keeps_pattern_for_unknown_without_opaque_display() {
+	mut app := new_app()
+	assert app.transparency_background_visible()
+	app.image_resource = ui2.ready_image_resource('unknown', 'unknown.png', ui2.ImageResourceInput{
+		width:    1
+		height:   1
+		channels: 4
+		pixels:   []u8{len: 4, init: 255}
+	}, .unknown)
+	assert app.transparency_background_visible()
+}
+
 fn test_app_toggle_fit_and_actual() {
 	mut app := new_app()
 	app.set_canvas_size(960, 540)
@@ -141,7 +179,7 @@ fn test_app_playlist_navigation() {
 	assert app.playlist == ['/photos/img5.png']
 	assert app.active_index == 0
 
-	// Integrate neighborhood batch
+	// Integrate Neighborhood batch
 	batch := SiblingBatch{
 		items:           ['/photos/img1.png', '/photos/img2.png', '/photos/img5.png',
 			'/photos/img10.png', '/photos/img20.png']
@@ -187,7 +225,7 @@ fn test_app_progressive_batch_integration_preserves_active() {
 	mut app := new_app()
 	app.open_path('/photos/pic50.png')
 
-	// First batch: neighborhood of 50..60
+	// First batch: Neighborhood of 50..60
 	batch1 := SiblingBatch{
 		items:           ['/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
 		is_neighborhood: true
@@ -295,7 +333,7 @@ fn test_app_directory_first_content_before_completion() {
 
 	first := next_app_scan_batch(ch)
 	assert first.is_first_content == true
-	assert first.is_neighborhood == true
+	assert first.is_neighborhood == false
 	assert first.is_last == false
 	assert first.items == [os.join_path(tmp_dir, 'img1.png')]
 	app.integrate_batch(first)
