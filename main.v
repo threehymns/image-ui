@@ -18,25 +18,27 @@ pub const error_text_hex = u32(0xdc5a5a)
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	core                 App
-	image_loader         ImageResourceLoader
-	image_pipeline       ImagePipeline
-	window_ready         bool
-	is_dragging          bool
-	drag_prev_x          f64
-	drag_prev_y          f64
-	last_click_time      i64
-	last_click_x         f64
-	last_click_y         f64
-	scanned_dir          string
-	scanner_ch           chan SiblingBatch
-	has_scanner_ch       bool
-	scanner_cancel       chan bool
-	has_scanner_cancel   bool
-	requested_window_w   int
-	requested_window_h   int
-	transparency_pattern ui2.RepeatPattern
-	benchmark_live       BenchmarkLiveTrace
+	core                          App
+	image_loader                  ImageResourceLoader
+	image_pipeline                ImagePipeline
+	sibling_cache_budget_bytes    int
+	sibling_cache_neighbor_radius int = -1
+	window_ready                  bool
+	is_dragging                   bool
+	drag_prev_x                   f64
+	drag_prev_y                   f64
+	last_click_time               i64
+	last_click_x                  f64
+	last_click_y                  f64
+	scanned_dir                   string
+	scanner_ch                    chan SiblingBatch
+	has_scanner_ch                bool
+	scanner_cancel                chan bool
+	has_scanner_cancel            bool
+	requested_window_w            int
+	requested_window_h            int
+	transparency_pattern          ui2.RepeatPattern
+	benchmark_live                BenchmarkLiveTrace
 }
 
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
@@ -92,6 +94,7 @@ pub fn (mut app ViewerApp) poll_scanner() {
 		}
 	}
 	if received_any {
+		app.sync_sibling_cache_retention()
 		app.update_window_title()
 	}
 }
@@ -104,10 +107,24 @@ fn (mut app ViewerApp) ensure_image_loader() {
 
 fn (mut app ViewerApp) ensure_image_pipeline() {
 	app.ensure_image_loader()
+	mut pipeline_created := false
 	if !app.image_pipeline.configured {
-		app.image_pipeline = new_image_pipeline(app.image_loader.decoder)
+		mut budget_bytes := app.sibling_cache_budget_bytes
+		if budget_bytes == 0 {
+			budget_bytes = configured_sibling_cache_budget_bytes()
+		}
+		app.image_pipeline = new_image_pipeline_with_cache(app.image_loader.decoder, budget_bytes)
+		pipeline_created = true
 	} else if !app.image_pipeline.manual && voidptr(app.image_pipeline.decoder) == unsafe { nil } {
 		app.image_pipeline.decoder = app.image_loader.decoder
+	}
+	if app.sibling_cache_neighbor_radius >= 0 {
+		app.image_pipeline.neighbor_radius = app.sibling_cache_neighbor_radius
+	} else if pipeline_created {
+		app.image_pipeline.neighbor_radius = configured_sibling_cache_neighbor_radius()
+	}
+	if app.sibling_cache_budget_bytes > 0 {
+		app.image_pipeline.set_cache_budget(app.sibling_cache_budget_bytes)
 	}
 	if !app.core.has_image {
 		app.image_pipeline.clear_resident()
@@ -116,6 +133,34 @@ fn (mut app ViewerApp) ensure_image_pipeline() {
 			|| app.image_pipeline.resident_resource.source != app.core.displayed_resource.source) {
 		app.image_pipeline.set_resident(app.core.displayed_resource)
 	}
+	app.sync_sibling_cache_retention()
+}
+
+fn (mut app ViewerApp) sync_sibling_cache_retention() {
+	if !app.image_pipeline.configured {
+		return
+	}
+	mut radius := app.image_pipeline.neighbor_radius
+	if radius < 0 {
+		radius = 0
+	}
+	mut start := app.core.active_index - radius
+	if start < 0 {
+		start = 0
+	}
+	mut end := app.core.active_index + radius + 1
+	if end > app.core.playlist.len {
+		end = app.core.playlist.len
+	}
+	mut nearby := []string{}
+	if start < end {
+		for index in start .. end {
+			if index != app.core.active_index {
+				nearby << app.core.playlist[index]
+			}
+		}
+	}
+	app.image_pipeline.set_nearby_paths(nearby)
 }
 
 pub fn (mut app ViewerApp) poll_image_pipeline() {
@@ -146,6 +191,7 @@ pub fn (mut app ViewerApp) request_image(path string, reason string) {
 		return
 	}
 	app.ensure_image_pipeline()
+	app.sync_sibling_cache_retention()
 	request := app.core.request_image(path, reason)
 	app.image_pipeline.request_with_generation(path, reason, request.generation)
 	app.update_window_title()

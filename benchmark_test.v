@@ -71,6 +71,9 @@ fn test_benchmark_config_exposes_fixed_sample_and_cache_controls() {
 	assert config.iterations == 7
 	assert config.cache == .cold
 	assert parse_benchmark_config(['--cache', 'warm']) or { panic(err) }.cache == .warm
+	config_with_budget := parse_benchmark_config(['--cache-budget', '65536']) or { panic(err) }
+	assert config_with_budget.cache_budget_bytes == 65536
+	assert benchmark_cache_budgets(config_with_budget) == [65536]
 }
 
 fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {

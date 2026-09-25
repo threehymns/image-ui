@@ -40,6 +40,10 @@ _Avoid_: Freeze view, pin zoom, sticky scale
 A bounded, LRU in-memory store of low-resolution downscaled preview textures used exclusively by the filmstrip.
 _Avoid_: Image pool, texture store, icon cache
 
+**Sibling Resource Cache**:
+A byte-bounded, LRU-managed store of decoded full-resolution resources for the current image and discovered nearby Siblings.
+_Avoid_: Thumbnail Cache, Filmstrip Cache, image pool
+
 **Fit to Window**:
 A viewport calculation that scales and centers an image to maximally fill the canvas while preserving aspect ratio.
 _Avoid_: Best fit, auto scale, letterbox mode

@@ -78,6 +78,7 @@ fn test_image_resource_loader_uses_one_decode_for_metadata_and_pixels() {
 	assert resource.height() == 1
 	assert resource.channels() == 4
 	assert resource.decoded_pixels() == image_resource_test_pixels()
+	assert image_resource_renderer_bytes(resource) == 8
 }
 
 fn test_default_stbi_decoder_returns_rgba_metadata_and_opacity() {
@@ -91,6 +92,7 @@ fn test_default_stbi_decoder_returns_rgba_metadata_and_opacity() {
 	assert decoded.height == 1
 	assert decoded.channels == 4
 	assert decoded.pixels.len == 4
+	assert decoded.renderer_bytes == decoded.pixels.len
 	assert decoded.opacity == .proven_opaque
 	assert decoded.pixels[3] == 255
 }
@@ -335,18 +337,23 @@ fn test_sibling_failure_keeps_navigation_and_recovers() {
 
 fn test_resident_resource_uses_render_path_without_decode() {
 	image_resource_test_decode_count = 0
+	path := image_resource_test_path()
+	os.write_file(path, 'fixture') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
 	mut app := &ViewerApp{
 		core:           new_app()
 		image_loader:   new_image_resource_loader(image_resource_test_decoder)
 		image_pipeline: new_manual_image_pipeline()
 	}
-	app.core.set_image_loaded('resident.png', 10, 20)
+	app.core.set_image_resource(image_resource_test_ready(path, 'resident-resource'))
 	app.image_pipeline.set_resident(app.core.displayed_image_resource())
-	app.request_image('resident.png', 'resident')
+	app.request_image(path, 'resident')
 	assert app.core.image_resource.state == .loading
 	_ = app.build_screen_at_size(100, 100)
 	assert app.core.image_resource.state == .ready
-	assert app.core.displayed_image_resource().source == 'resident.png'
+	assert app.core.displayed_image_resource().source == path
 	assert app.image_pipeline.metrics.resident_hits == 1
 	assert image_resource_test_decode_count == 0
 }
