@@ -126,3 +126,92 @@ fn test_scan_directory_siblings_streaming() {
 	last_batch := batches[batches.len - 1]
 	assert last_batch.is_last == true
 }
+
+fn next_scan_batch(ch chan SiblingBatch) SiblingBatch {
+	select {
+		batch := <-ch {
+			return batch
+		}
+		5 * time.second {
+			panic('scanner batch timeout')
+		}
+	}
+	return SiblingBatch{}
+}
+
+fn run_cancelled_scan(ch chan SiblingBatch, cancel chan bool, done chan bool) {
+	scan_directory_siblings_with_generation_and_cancel('/path/that/does/not/exist', '', 1, ch, cancel)
+	done <- true
+}
+
+fn test_scanner_cancellation_stops_worker() {
+	ch := chan SiblingBatch{cap: 1}
+	cancel := chan bool{}
+	done := chan bool{cap: 1}
+	spawn run_cancelled_scan(ch, cancel, done)
+	cancel.close()
+
+	select {
+		<-done {
+		}
+		5 * time.second {
+			panic('scanner cancellation timeout')
+		}
+	}
+}
+
+fn test_scan_directory_siblings_large_directory_first_content_before_completion() {
+	tmp_dir := os.join_path(os.temp_dir(), 'test_scan_large_${time.ticks()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	mut expected_files := []string{}
+	for i in 1 .. 1201 {
+		path := os.join_path(tmp_dir, 'pic${i}.png')
+		os.write_file(path, 'fake') or { panic(err) }
+		expected_files << path
+	}
+	os.write_file(os.join_path(tmp_dir, '.hidden.png'), 'fake') or { panic(err) }
+	os.write_file(os.join_path(tmp_dir, 'notes.txt'), 'fake') or { panic(err) }
+	os.mkdir(os.join_path(tmp_dir, 'nested.png')) or { panic(err) }
+	natural_sort(mut expected_files)
+
+	target := os.join_path(tmp_dir, 'pic600.png')
+	generation := 73
+	ch := chan SiblingBatch{cap: 8}
+	spawn scan_directory_siblings_with_generation(tmp_dir, target, generation, ch)
+
+	first := next_scan_batch(ch)
+	assert first.generation == generation
+	assert first.is_neighborhood == true
+	assert first.is_first_content == true
+	assert first.is_last == false
+	assert first.items.len == 101
+	assert target in first.items
+
+	mut all_streamed := []string{}
+	mut batches := 0
+	mut current := first
+	for {
+		batches++
+		for item in current.items {
+			if item !in all_streamed {
+				all_streamed << item
+			}
+		}
+		if current.is_last {
+			break
+		}
+		current = next_scan_batch(ch)
+	}
+
+	assert batches > 1
+	assert all_streamed.len == expected_files.len
+	natural_sort(mut all_streamed)
+	assert all_streamed == expected_files
+	assert os.join_path(tmp_dir, '.hidden.png') !in all_streamed
+	assert os.join_path(tmp_dir, 'notes.txt') !in all_streamed
+	assert os.join_path(tmp_dir, 'nested.png') !in all_streamed
+}

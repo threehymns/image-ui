@@ -8,23 +8,25 @@ import ui2
 // without requiring an active OpenGL/Wayland display server.
 pub struct App {
 pub mut:
-	target_path      string
-	image_resource   ui2.ImageResource
-	has_image        bool
-	img_width        int
-	img_height       int
-	viewport         Viewport
-	canvas_w         int
-	canvas_h         int
-	error_msg        string
-	filter_mode      TextureFilterMode = .linear
-	viewport_init    bool
+	target_path       string
+	image_resource    ui2.ImageResource
+	has_image         bool
+	img_width         int
+	img_height        int
+	viewport          Viewport
+	canvas_w          int
+	canvas_h          int
+	error_msg         string
+	filter_mode       TextureFilterMode = .linear
+	viewport_init     bool
 	show_checkerboard bool = true
 	// Sibling playlist and traversal state
-	playlist      []string
-	active_index  int
-	is_scanning   bool
-	scan_complete bool
+	playlist          []string
+	active_index      int
+	is_scanning       bool
+	scan_complete     bool
+	scan_generation   int
+	has_first_content bool
 }
 
 // new_app initializes a new headless App instance.
@@ -81,6 +83,7 @@ pub fn (mut app App) set_canvas_size(w int, h int) {
 fn (mut app App) set_image_metadata(path string, w int, h int) {
 	app.target_path = path
 	app.has_image = true
+	app.has_first_content = true
 	app.img_width = w
 	app.img_height = h
 	app.error_msg = ''
@@ -118,6 +121,7 @@ pub fn (mut app App) set_image_resource(resource ui2.ImageResource) {
 		.error {
 			app.target_path = resource.source
 			app.has_image = false
+			app.has_first_content = false
 			app.img_width = 0
 			app.img_height = 0
 			app.error_msg = resource.error
@@ -131,56 +135,90 @@ pub fn (mut app App) set_error(path string, msg string) {
 	app.image_resource = ui2.error_image_resource('', path, msg)
 	app.target_path = path
 	app.has_image = false
+	app.has_first_content = false
 	app.img_width = 0
 	app.img_height = 0
 	app.error_msg = msg
 	app.viewport_init = false
 }
 
+fn (mut app App) invalidate_scan() {
+	app.scan_generation++
+}
+
+fn (mut app App) begin_scan(generation int) {
+	if generation > app.scan_generation {
+		app.scan_generation = generation
+	}
+	app.is_scanning = true
+	app.scan_complete = false
+}
+
+fn (app &App) accepts_batch(batch SiblingBatch) bool {
+	return batch.generation == app.scan_generation
+}
+
+fn merge_sorted_paths(current []string, incoming []string) []string {
+	mut result := []string{}
+	mut seen := map[string]bool{}
+	mut current_index := 0
+	mut incoming_index := 0
+	for current_index < current.len || incoming_index < incoming.len {
+		mut item := ''
+		if incoming_index >= incoming.len {
+			item = current[current_index]
+			current_index++
+		} else if current_index >= current.len {
+			item = incoming[incoming_index]
+			incoming_index++
+		} else if natural_compare_paths(current[current_index], incoming[incoming_index]) <= 0 {
+			item = current[current_index]
+			current_index++
+		} else {
+			item = incoming[incoming_index]
+			incoming_index++
+		}
+		if !seen[item] {
+			result << item
+			seen[item] = true
+		}
+	}
+	return result
+}
+
 // open_path opens a target image file or directory.
-// When passed a directory, automatically resolves the first image in natural sort order.
 pub fn (mut app App) open_path(path string) {
+	app.invalidate_scan()
+	app.target_path = path
+	app.has_image = false
+	app.has_first_content = false
+	app.img_width = 0
+	app.img_height = 0
+	app.playlist = []
+	app.active_index = 0
+	app.error_msg = ''
+	app.is_scanning = false
+	app.scan_complete = false
+
 	if path == '' {
-		app.target_path = ''
-		app.has_image = false
-		app.playlist = []
-		app.active_index = 0
-		app.is_scanning = false
-		app.scan_complete = false
-		app.error_msg = ''
 		return
 	}
 
 	if os.is_dir(path) {
-		first_img := find_first_image_in_dir(path)
-		if first_img != none {
-			app.target_path = first_img
-			app.playlist = [first_img]
-			app.active_index = 0
-			app.is_scanning = true
-			app.scan_complete = false
-			app.error_msg = ''
-		} else {
-			app.set_error(path, 'No supported images found in directory: ${path}')
-			app.playlist = []
-			app.active_index = 0
-			app.is_scanning = false
-			app.scan_complete = true
-		}
+		app.is_scanning = true
 		return
 	}
 
-	app.target_path = path
 	app.playlist = [path]
-	app.active_index = 0
 	app.is_scanning = true
-	app.scan_complete = false
-	app.error_msg = ''
 }
 
 // integrate_batch merges streamed sibling scanner batches into the playlist,
 // ensuring natural sort order and preserving the active image pointer.
 pub fn (mut app App) integrate_batch(batch SiblingBatch) {
+	if !app.accepts_batch(batch) {
+		return
+	}
 	if batch.items.len == 0 {
 		if batch.is_last {
 			app.is_scanning = false
@@ -194,24 +232,14 @@ pub fn (mut app App) integrate_batch(batch SiblingBatch) {
 	} else {
 		app.target_path
 	}
-
-	if batch.is_neighborhood {
-		app.playlist = batch.items.clone()
-	} else {
-		mut existing := map[string]bool{}
-		for item in app.playlist {
-			existing[item] = true
-		}
-		for item in batch.items {
-			if !existing[item] {
-				app.playlist << item
-				existing[item] = true
-			}
-		}
-		natural_sort(mut app.playlist)
+	mut incoming := batch.items.clone()
+	natural_sort(mut incoming)
+	had_playlist := app.playlist.len > 0
+	app.playlist = merge_sorted_paths(app.playlist, incoming)
+	if batch.is_first_content || batch.is_neighborhood || !had_playlist {
+		app.has_first_content = true
 	}
 
-	// Re-locate current active file in the playlist
 	mut new_idx := -1
 	for i, p in app.playlist {
 		if p == current_active || (current_active != '' && os.file_name(p) == os.file_name(current_active)) {

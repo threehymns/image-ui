@@ -30,6 +30,8 @@ pub mut:
 	scanned_dir                string
 	scanner_ch                 chan SiblingBatch
 	has_scanner_ch             bool
+	scanner_cancel             chan bool
+	has_scanner_cancel         bool
 	requested_window_w         int
 	requested_window_h         int
 	checkerboard_key           string
@@ -68,9 +70,19 @@ pub fn (mut app ViewerApp) poll_scanner() {
 	for count < 10 {
 		select {
 			batch := <-app.scanner_ch {
+				if !app.core.accepts_batch(batch) {
+					count++
+					continue
+				}
 				app.core.integrate_batch(batch)
+				if batch.items.len == 0 && batch.is_last && !app.core.has_image && os.is_dir(app.core.target_path) {
+					app.core.set_error(app.core.target_path, 'No supported images found in directory: ${app.core.target_path}')
+				}
 				received_any = true
 				count++
+				if batch.is_first_content && batch.items.len > 0 && !app.core.has_image {
+					app.load_image_internal(app.core.target_path, false, false)
+				}
 				if batch.is_last {
 					app.has_scanner_ch = false
 					break
@@ -92,7 +104,36 @@ fn (mut app ViewerApp) ensure_image_loader() {
 	}
 }
 
-pub fn (mut app ViewerApp) load_image(path string) {
+fn (mut app ViewerApp) start_scanner(dir_path string, target_path string, force bool) {
+	mut clean_dir := os.real_path(dir_path)
+	if clean_dir == '' {
+		clean_dir = dir_path
+	}
+	if !force && app.scanned_dir == clean_dir {
+		return
+	}
+	if app.has_scanner_cancel {
+		app.scanner_cancel.close()
+		app.has_scanner_cancel = false
+	}
+	if app.has_scanner_ch || app.scanned_dir.len > 0 {
+		app.core.invalidate_scan()
+	}
+	mut generation := app.core.scan_generation
+	if generation == 0 {
+		app.core.invalidate_scan()
+		generation = app.core.scan_generation
+	}
+	app.scanned_dir = clean_dir
+	app.scanner_ch = chan SiblingBatch{cap: 32}
+	app.has_scanner_ch = true
+	app.scanner_cancel = chan bool{}
+	app.has_scanner_cancel = true
+	app.core.begin_scan(generation)
+	spawn scan_directory_siblings_with_generation_and_cancel(clean_dir, target_path, generation, app.scanner_ch, app.scanner_cancel)
+}
+
+fn (mut app ViewerApp) load_image_internal(path string, start_scan bool, force_scan bool) {
 	if path == '' {
 		app.core.set_error('', '')
 		app.update_window_title()
@@ -105,46 +146,45 @@ pub fn (mut app ViewerApp) load_image(path string) {
 		return
 	}
 
-	mut img_path := path
-	mut dir_path := ''
 	if os.is_dir(path) {
-		first_img := find_first_image_in_dir(path) or {
-			app.core.set_error(path, 'No supported images found in directory: ${path}')
+		app.start_scanner(path, '', force_scan)
+		app.update_window_title()
+		return
+	}
+
+	if !app.core.has_image || app.core.image_resource.id.len == 0
+		|| app.core.image_resource.source != path
+		|| app.core.image_resource.state != .ready {
+		app.ensure_image_loader()
+		resource := app.image_loader.load(path)
+		app.core.set_image_resource(resource)
+		if resource.state != .ready {
 			app.update_window_title()
 			return
 		}
-		img_path = first_img
-		dir_path = path
-	} else {
-		dir_path = os.dir(path)
 	}
-
-	if app.core.image_resource.id.len > 0
-		&& app.core.image_resource.source == img_path
-		&& app.core.image_resource.state == .ready {
-		app.update_window_title()
-		return
+	if start_scan {
+		app.start_scanner(os.dir(path), path, force_scan)
 	}
-	app.ensure_image_loader()
-	resource := app.image_loader.load(img_path)
-	app.core.set_image_resource(resource)
-	if resource.state != .ready {
-		app.update_window_title()
-		return
-	}
-
-	// If scanning a new directory, spawn background worker channel
-	clean_dir := os.real_path(dir_path)
-	if clean_dir != app.scanned_dir {
-		app.scanned_dir = clean_dir
-		app.scanner_ch = chan SiblingBatch{cap: 32}
-		app.has_scanner_ch = true
-		app.core.is_scanning = true
-		app.core.scan_complete = false
-		spawn scan_directory_siblings(clean_dir, img_path, app.scanner_ch)
-	}
-
 	app.update_window_title()
+}
+
+fn playlist_contains_path(playlist []string, path string) bool {
+	for item in playlist {
+		if item == path {
+			return true
+		}
+	}
+	return false
+}
+
+pub fn (mut app ViewerApp) load_image(path string) {
+	if !playlist_contains_path(app.core.playlist, path) {
+		app.core.open_path(path)
+		app.load_image_internal(path, true, true)
+		return
+	}
+	app.load_image_internal(path, true, false)
 }
 
 fn (mut app ViewerApp) get_checkerboard_layer(win_w int, win_h int) ui2.Element {
@@ -185,8 +225,8 @@ pub fn (mut app ViewerApp) build_screen() ui2.Element {
 	first_build := !app.window_ready
 	if first_build {
 		app.window_ready = true
-		if app.core.target_path != '' {
-			app.load_image(app.core.target_path)
+		if app.core.target_path != '' && !app.core.has_image {
+			app.load_image_internal(app.core.target_path, true, true)
 		} else {
 			app.update_window_title()
 		}
@@ -536,7 +576,8 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 
 pub fn (mut app ViewerApp) handle_drop(e ui2.DropEvent) {
 	if e.paths.len > 0 {
-		app.load_image(e.paths[0])
+		app.core.open_path(e.paths[0])
+		app.load_image_internal(e.paths[0], true, true)
 	}
 }
 
@@ -577,7 +618,13 @@ fn main() {
 pub fn launch_viewer(image_path string) {
 	mut app := unsafe { global_viewer_app }
 	app.core = new_app()
-	app.core.target_path = image_path
+	app.core.open_path(image_path)
+	if app.has_scanner_cancel {
+		app.scanner_cancel.close()
+	}
+	app.scanned_dir = ''
+	app.has_scanner_ch = false
+	app.has_scanner_cancel = false
 	app.requested_window_w = 1024
 	app.requested_window_h = 768
 	$if viewer_benchmark ? {
