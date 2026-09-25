@@ -523,11 +523,13 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 						if normalized.signature.exists {
 							pipeline.cache.put(normalized.request.path, normalized.signature, normalized.resource,
 								normalized.cpu_bytes, normalized.renderer_bytes)
-							pipeline.resident_resource = normalized.resource
 						}
 					}
 				}
 				if pipeline.result_is_current(normalized) {
+					if normalized.resource.state == .ready {
+						pipeline.resident_resource = normalized.resource
+					}
 					accepted << normalized
 					pipeline.metrics.accepted++
 					if normalized.resource.state == .error {

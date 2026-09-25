@@ -232,6 +232,30 @@ fn test_async_pipeline_reloads_after_file_signature_changes() {
 	assert pipeline.cache.metrics.hits == 0
 }
 
+fn test_pipeline_keeps_current_resource_when_obsolete_completion_arrives() {
+	root := os.join_path(os.temp_dir(), 'image-ui-sibling-pending-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	current_path := os.join_path(root, 'current.png')
+	first_path := os.join_path(root, 'first.png')
+	latest_path := os.join_path(root, 'latest.png')
+	for path in [current_path, first_path, latest_path] {
+		os.write_file(path, 'fixture') or { panic(err) }
+	}
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_resident(sibling_cache_test_resource(current_path))
+	pipeline.request(first_path, 'first')
+	latest_request := pipeline.request(latest_path, 'latest')
+	assert pipeline.complete_active(sibling_cache_test_resource(first_path))
+	assert pipeline.poll().len == 0
+	assert pipeline.resident_resource.source == current_path
+	assert pipeline.complete(latest_request.generation, latest_request.path, sibling_cache_test_resource(latest_path))
+	assert pipeline.poll().len == 1
+	assert pipeline.resident_resource.source == latest_path
+}
+
 fn test_viewer_configures_nearby_retention_without_prefetching() {
 	mut app := &ViewerApp{
 		core:                          new_app()
