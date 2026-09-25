@@ -117,6 +117,86 @@ fn test_sibling_resource_cache_invalidates_changed_file_signature() {
 	assert cache.metrics.resident_bytes == 0
 }
 
+fn test_sibling_resource_cache_periodic_digest_catches_same_size_same_second_rewrite() {
+	path := os.join_path(os.temp_dir(), 'image-ui-sibling-content-rewrite-${time.ticks()}.png')
+	os.write_file(path, 'aaaa') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	initial := sibling_file_content_signature(path)
+	mut cache := new_sibling_resource_cache(32)
+	assert cache.put(path, initial, sibling_cache_test_resource(path), 8, 0)
+	os.write_file(path, 'bbbb') or { panic(err) }
+	os.utime(path, initial.modified_unix, initial.modified_unix) or { panic(err) }
+	stat_only := sibling_file_signature(path)
+	assert stat_only.size == initial.size
+	assert stat_only.modified_unix == initial.modified_unix
+	assert stat_only.changed_unix == initial.changed_unix
+	assert cache.get(path, stat_only) != none
+	assert !cache.revalidate(path, sibling_file_content_signature(path))
+	assert cache.metrics.hits == 1
+	assert cache.metrics.content_validations == 1
+	assert cache.metrics.invalidations == 1
+	assert !cache.contains(path)
+}
+
+fn test_sibling_resource_cache_hit_retains_resource_and_content_validation() {
+	path := os.join_path(os.temp_dir(), 'image-ui-sibling-cache-hit-${time.ticks()}.png')
+	os.write_file(path, 'same') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	mut cache := new_sibling_resource_cache(32)
+	full := sibling_file_content_signature(path)
+	resource := sibling_cache_test_resource(path)
+	assert cache.put(path, full, resource, 8, 0)
+	hit := cache.get(path, sibling_file_signature(path)) or { panic('expected cache hit') }
+	assert hit == resource
+	assert cache.revalidate(path, sibling_file_content_signature(path))
+	assert cache.contains(path)
+	assert cache.metrics.hits == 1
+	assert cache.metrics.content_validations == 1
+	assert cache.metrics.invalidations == 0
+}
+
+fn test_pipeline_revalidates_current_displayed_resource_without_request_cache_hit() {
+	path := os.join_path(os.temp_dir(), 'image-ui-current-revalidation-${time.ticks()}.png')
+	os.write_file(path, 'aaaa') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_resident(sibling_cache_test_resource(path))
+	assert pipeline.cache.contains(path)
+	initial := sibling_file_content_signature(path)
+	os.write_file(path, 'bbbb') or { panic(err) }
+	os.utime(path, initial.modified_unix, initial.modified_unix) or { panic(err) }
+	pipeline.current_revalidation_interval_ns = 1
+	pipeline.last_current_revalidation_ns = 0
+	assert pipeline.poll().len == 0
+	assert pipeline.current_resource_invalidated
+	assert !pipeline.cache.contains(path)
+	assert pipeline.resident_resource.state == .loading
+	assert pipeline.take_current_resource_invalidated()
+	assert !pipeline.take_current_resource_invalidated()
+}
+
+fn test_current_revalidation_keeps_oversized_resident_when_unchanged() {
+	path := os.join_path(os.temp_dir(), 'image-ui-oversized-current-${time.ticks()}.png')
+	os.write_file(path, 'aaaa') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_cache_budget(1)
+	pipeline.set_resident(sibling_cache_test_resource(path))
+	pipeline.current_revalidation_interval_ns = 1
+	pipeline.last_current_revalidation_ns = 0
+	assert pipeline.poll().len == 0
+	assert pipeline.resident_resource.state == .ready
+	assert !pipeline.current_resource_invalidated
+}
+
 fn test_sibling_resource_cache_keeps_current_and_nearby_entries_within_budget() {
 	mut cache := new_sibling_resource_cache(30)
 	first_signature := SiblingFileSignature{ exists: true, size: 1, modified_unix: 1 }
@@ -205,22 +285,22 @@ fn test_prefetched_resource_is_reused_by_user_request_without_second_decode() {
 	}
 	sibling_cache_test_decode_count = 0
 	mut pipeline := new_image_pipeline_with_cache(sibling_cache_test_decoder, 1024)
-	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+	pipeline.set_sibling_prefetch(SiblingPrefetch{
 		scan_generation: 1
 		direction:       1
 		current_path:    current
 	})
 	mut prefetched := ImagePipelineResult{}
 	select {
-		prefetched = <-pipeline.prefetch_result_ch {
+		prefetched = <-pipeline.prefetch.result_ch {
 		}
 		5 * time.second {
 			panic('prefetch decode timeout')
 		}
 	}
-	pipeline.prefetch_result_ch <- prefetched
+	pipeline.prefetch.result_ch <- prefetched
 	assert pipeline.poll().len == 0
-	assert pipeline.prefetch_metrics.decode_count == 1
+	assert pipeline.prefetch_metrics().decode_count == 1
 	assert pipeline.cache.contains(current)
 	request := pipeline.request(current, 'user')
 	results := pipeline.poll()
@@ -296,8 +376,8 @@ fn test_pipeline_keeps_current_resource_when_obsolete_completion_arrives() {
 	assert pipeline.resident_resource.source == latest_path
 }
 
-fn test_viewer_configures_nearby_retention_and_prefetches_immediate_neighborhood() {
-	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-neighborhood-${time.ticks()}')
+fn test_viewer_configures_nearby_retention_and_prefetches_immediate_sibling_window() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-sibling_window-${time.ticks()}')
 	os.mkdir_all(root) or { panic(err) }
 	defer {
 		os.rmdir_all(root) or {}
@@ -309,9 +389,9 @@ fn test_viewer_configures_nearby_retention_and_prefetches_immediate_neighborhood
 		os.write_file(path, 'fixture') or { panic(err) }
 	}
 	mut app := &ViewerApp{
-		core:                          new_app()
-		image_pipeline:                new_manual_image_pipeline()
-		sibling_cache_neighbor_radius: 2
+		core:                 new_app()
+		image_pipeline:       new_manual_image_pipeline()
+		sibling_cache_radius: 2
 	}
 	app.core.playlist = [previous, current, next]
 	app.core.active_index = 1
@@ -319,11 +399,11 @@ fn test_viewer_configures_nearby_retention_and_prefetches_immediate_neighborhood
 	app.sync_sibling_cache_retention()
 
 	assert app.image_pipeline.nearby_paths == [previous, next]
-	assert app.image_pipeline.has_prefetch_active
-	assert app.image_pipeline.prefetch_active_request.path == current
-	assert app.image_pipeline.has_prefetch_queued
-	assert app.image_pipeline.prefetch_queued_request.path == next
-	assert app.image_pipeline.prefetch_metrics.requested == 3
+	assert app.image_pipeline.has_prefetch_active()
+	assert app.image_pipeline.prefetch_active_request().path == current
+	assert app.image_pipeline.has_prefetch_queued()
+	assert app.image_pipeline.prefetch_queued_request().path == next
+	assert app.image_pipeline.prefetch_metrics().requested == 3
 
 	for expected_path in [current, next, previous] {
 		assert app.image_pipeline.complete_prefetch_active(sibling_cache_test_resource(expected_path))
@@ -331,7 +411,7 @@ fn test_viewer_configures_nearby_retention_and_prefetches_immediate_neighborhood
 		assert app.image_pipeline.cache.contains(expected_path)
 	}
 
-	assert app.image_pipeline.prefetch_metrics.prefetched == 3
+	assert app.image_pipeline.prefetch_metrics().prefetched == 3
 	assert app.image_pipeline.prefetch_pending_count() == 0
 	assert app.image_pipeline.cache.metrics.resident_bytes <= app.image_pipeline.cache.budget_bytes
 }
@@ -349,58 +429,58 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 		os.write_file(path, 'fixture') or { panic(err) }
 	}
 	mut pipeline := new_manual_image_pipeline()
-	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+	pipeline.set_sibling_prefetch(SiblingPrefetch{
 		scan_generation: 1
 		direction:       1
 		current_path:    current
 	})
 
-	first_generation := pipeline.prefetch_generation
-	assert pipeline.prefetch_active_request.path == current
+	first_generation := pipeline.prefetch_generation()
+	assert pipeline.prefetch_active_request().path == current
 
-	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+	pipeline.set_sibling_prefetch(SiblingPrefetch{
 		scan_generation: 4
 		direction:       -1
 		previous_path:   previous
 		current_path:    current
 		next_path:       next
 	})
-	assert pipeline.prefetch_generation > first_generation
-	assert pipeline.prefetch_active_request.path == current
+	assert pipeline.prefetch_generation() > first_generation
+	assert pipeline.prefetch_active_request().path == current
 	pending_after_direction := pipeline.prefetch_pending_count()
 	assert pending_after_direction == 4
 	assert pipeline.complete_prefetch_active(sibling_cache_test_resource(current))
 	assert pipeline.poll().len == 0
 	assert !pipeline.cache.contains(current)
-	assert pipeline.prefetch_active_request.path == current
-	assert pipeline.prefetch_queued_request.path == previous
+	assert pipeline.prefetch_active_request().path == current
+	assert pipeline.prefetch_queued_request().path == previous
 
-	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+	pipeline.set_sibling_prefetch(SiblingPrefetch{
 		scan_generation: 5
 		direction:       -1
 		previous_path:   previous
 		current_path:    current
 		next_path:       next
 	})
-	assert pipeline.prefetch_scan_generation == 5
-	assert pipeline.prefetch_context_valid
+	assert pipeline.prefetch_scan_generation() == 5
+	assert pipeline.prefetch_context_valid()
 	pending_after_scan := pipeline.prefetch_pending_count()
 	assert pending_after_scan == 4
-	assert pipeline.prefetch_metrics.cancelled >= 2
-	assert pipeline.prefetch_metrics.skipped >= 2
-	stale_generation := pipeline.prefetch_generation
-	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+	assert pipeline.prefetch_metrics().cancelled >= 2
+	assert pipeline.prefetch_metrics().skipped >= 2
+	stale_generation := pipeline.prefetch_generation()
+	pipeline.set_sibling_prefetch(SiblingPrefetch{
 		scan_generation: 3
 		direction:       1
 		previous_path:   previous
 		current_path:    next
 		next_path:       current
 	})
-	assert pipeline.prefetch_scan_generation == 5
-	assert pipeline.prefetch_generation == stale_generation
+	assert pipeline.prefetch_scan_generation() == 5
+	assert pipeline.prefetch_generation() == stale_generation
 }
 
-fn test_scanner_neighborhood_batch_starts_prefetch_for_discovered_paths() {
+fn test_scanner_sibling_window_batch_starts_prefetch_for_discovered_paths() {
 	root := os.join_path(os.temp_dir(), 'image-ui-scanner-prefetch-${time.ticks()}')
 	os.mkdir_all(root) or { panic(err) }
 	defer {
@@ -424,17 +504,17 @@ fn test_scanner_neighborhood_batch_starts_prefetch_for_discovered_paths() {
 	app.scanner_ch = chan SiblingBatch{cap: 1}
 	app.has_scanner_ch = true
 	app.scanner_ch <- SiblingBatch{
-		items:           [previous, current, next]
-		is_neighborhood: true
-		is_last:         true
-		generation:      app.core.scan_generation
+		items:             [previous, current, next]
+		is_sibling_window: true
+		is_last:           true
+		generation:        app.core.scan_generation
 	}
 	app.poll_scanner()
 	assert app.core.playlist == [previous, current, next]
-	assert app.image_pipeline.has_prefetch_active
-	assert app.image_pipeline.prefetch_active_request.path == current
-	assert app.image_pipeline.prefetch_queued_paths == [next, previous]
-	assert app.image_pipeline.prefetch_metrics.requested == 3
+	assert app.image_pipeline.has_prefetch_active()
+	assert app.image_pipeline.prefetch_active_request().path == current
+	assert app.image_pipeline.prefetch_queued_paths() == [next, previous]
+	assert app.image_pipeline.prefetch_metrics().requested == 3
 }
 
 fn test_user_request_has_independent_priority_over_active_prefetch() {
@@ -450,7 +530,7 @@ fn test_user_request_has_independent_priority_over_active_prefetch() {
 		os.write_file(path, 'fixture') or { panic(err) }
 	}
 	mut pipeline := new_manual_image_pipeline()
-	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
+	pipeline.set_sibling_prefetch(SiblingPrefetch{
 		scan_generation: 1
 		direction:       1
 		previous_path:   previous
@@ -459,13 +539,13 @@ fn test_user_request_has_independent_priority_over_active_prefetch() {
 	})
 	request := pipeline.request(next, 'user')
 	assert pipeline.has_active
-	assert pipeline.has_prefetch_active
+	assert pipeline.has_prefetch_active()
 	assert pipeline.pending_count() == 1
 	assert pipeline.complete(request.generation, request.path, sibling_cache_test_resource(next))
 	results := pipeline.poll()
 	assert results.len == 1
 	assert results[0].request.path == next
-	assert pipeline.has_prefetch_active
+	assert pipeline.has_prefetch_active()
 }
 
 fn test_cache_evicts_unrequired_entries_before_current_and_pending_resources() {

@@ -66,48 +66,30 @@ pub mut:
 
 pub struct LiveTraceSummary {
 pub mut:
-	process_to_first_content_ns i64 = -1
-	process_to_first_input_ns   i64 = -1
-	toggle_to_frame_ns          i64 = -1
-	switch_to_frame_ns          i64 = -1
-	pan_to_frame_ns             i64 = -1
-	zoom_to_frame_ns            i64 = -1
-	resize_to_frame_ns          i64 = -1
-	frame_median_ns             i64 = -1
-	frame_p95_ns                i64 = -1
-	frame_samples               int
-	viewport_width              int
-	viewport_height             int
-	checksum                    u64
-	complete                    bool
-	phase_ns                    map[string]i64
-	phase_order                 []string
-	phase_monotonic             bool = true
-	last_phase_us               i64  = -1
-	requested                   int
-	displayed                   int
-	skipped                     int
-	coalesced                   int
-	prefetch_requested          int
-	prefetched                  int
-	prefetch_skipped            int
-	prefetch_coalesced          int
-	prefetch_cancelled          int
-	prefetch_cached             int
-	decode_count                int
-	prefetch_decodes            int
-	cache_hits                  int
-	cache_misses                int
-	cache_updates               int
-	cache_evictions             int
-	cache_invalidations         int
-	cache_resident_bytes        int
-	cache_peak_bytes            int
-	cache_cpu_bytes             int
-	cache_renderer_bytes        int
-	cache_budget                int
-	left_input_count            int
-	right_input_count           int
+	process_to_first_content_ns  i64 = -1
+	process_to_first_input_ns    i64 = -1
+	toggle_to_frame_ns           i64 = -1
+	switch_to_frame_ns           i64 = -1
+	pan_transparent_to_frame_ns  i64 = -1
+	pan_opaque_to_frame_ns       i64 = -1
+	zoom_transparent_to_frame_ns i64 = -1
+	zoom_opaque_to_frame_ns      i64 = -1
+	resize_to_frame_ns           i64 = -1
+	frame_median_ns              i64 = -1
+	frame_p95_ns                 i64 = -1
+	frame_samples                int
+	viewport_width               int
+	viewport_height              int
+	checksum                     u64
+	complete                     bool
+	phase_ns                     map[string]i64
+	phase_order                  []string
+	phase_monotonic              bool = true
+	last_phase_us                i64  = -1
+	counters                     BenchmarkCounters
+	prefetch_cached_events       int
+	left_input_count             int
+	right_input_count            int
 }
 
 pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !LiveTraceSummary {
@@ -163,48 +145,71 @@ pub fn summarize_live_trace(path string, warmup_frames int, frame_target int) !L
 				match row.detail {
 					'toggle' { summary.toggle_to_frame_ns = row.value_us * 1000 }
 					'switch' { summary.switch_to_frame_ns = row.value_us * 1000 }
-					'pan' { summary.pan_to_frame_ns = row.value_us * 1000 }
-					'zoom' { summary.zoom_to_frame_ns = row.value_us * 1000 }
+					'pan_transparent' { summary.pan_transparent_to_frame_ns = row.value_us * 1000 }
+					'pan_opaque' { summary.pan_opaque_to_frame_ns = row.value_us * 1000 }
+					'zoom_transparent' {
+						summary.zoom_transparent_to_frame_ns = row.value_us * 1000
+					}
+					'zoom_opaque' { summary.zoom_opaque_to_frame_ns = row.value_us * 1000 }
 					else {}
 				}
 			}
 			'prefetch_cached' {
-				summary.prefetch_cached++
+				summary.prefetch_cached_events++
 			}
 			'pipeline_counters' {
-				summary.requested = row.value_us
+				summary.counters.requested = row.value_us
 				for item in row.detail.split(',') {
 					counter_parts := item.split(':')
 					if counter_parts.len != 2 {
 						continue
 					}
 					match counter_parts[0] {
-						'displayed' { summary.displayed = counter_parts[1].int() }
-						'skipped' { summary.skipped = counter_parts[1].int() }
-						'coalesced' { summary.coalesced = counter_parts[1].int() }
-						'prefetch_requested' { summary.prefetch_requested = counter_parts[1].int() }
-						'prefetched' { summary.prefetched = counter_parts[1].int() }
-						'prefetch_skipped' { summary.prefetch_skipped = counter_parts[1].int() }
-						'prefetch_coalesced' { summary.prefetch_coalesced = counter_parts[1].int() }
-						'prefetch_cancelled' { summary.prefetch_cancelled = counter_parts[1].int() }
-						'decodes' { summary.decode_count = counter_parts[1].int() }
-						'prefetch_decodes' { summary.prefetch_decodes = counter_parts[1].int() }
-						'cache_hits' { summary.cache_hits = counter_parts[1].int() }
-						'cache_misses' { summary.cache_misses = counter_parts[1].int() }
-						'cache_updates' { summary.cache_updates = counter_parts[1].int() }
-						'cache_evictions' { summary.cache_evictions = counter_parts[1].int() }
+						'displayed' { summary.counters.displayed = counter_parts[1].int() }
+						'skipped' { summary.counters.skipped = counter_parts[1].int() }
+						'coalesced' { summary.counters.coalesced = counter_parts[1].int() }
+						'prefetch_requested' {
+							summary.counters.prefetch_requested = counter_parts[1].int()
+						}
+						'prefetched' { summary.counters.prefetched = counter_parts[1].int() }
+						'prefetch_skipped' {
+							summary.counters.prefetch_skipped = counter_parts[1].int()
+						}
+						'prefetch_coalesced' {
+							summary.counters.prefetch_coalesced = counter_parts[1].int()
+						}
+						'prefetch_cancelled' {
+							summary.counters.prefetch_cancelled = counter_parts[1].int()
+						}
+						'decodes' { summary.counters.decode_count = counter_parts[1].int() }
+						'prefetch_decodes' {
+							summary.counters.prefetch_decodes = counter_parts[1].int()
+						}
+						'cache_hits' { summary.counters.cache_hits = counter_parts[1].int() }
+						'cache_misses' { summary.counters.cache_misses = counter_parts[1].int() }
+						'cache_updates' { summary.counters.cache_updates = counter_parts[1].int() }
+						'cache_evictions' {
+							summary.counters.cache_evictions = counter_parts[1].int()
+						}
 						'cache_invalidations' {
-							summary.cache_invalidations = counter_parts[1].int()
+							summary.counters.cache_invalidations = counter_parts[1].int()
+						}
+						'cache_content_validations' {
+							summary.counters.cache_content_validations = counter_parts[1].int()
 						}
 						'cache_resident_bytes' {
-							summary.cache_resident_bytes = counter_parts[1].int()
+							summary.counters.cache_bytes = counter_parts[1].int()
 						}
-						'cache_peak_bytes' { summary.cache_peak_bytes = counter_parts[1].int() }
-						'cache_cpu_bytes' { summary.cache_cpu_bytes = counter_parts[1].int() }
+						'cache_peak_bytes' {
+							summary.counters.cache_peak_bytes = counter_parts[1].int()
+						}
+						'cache_cpu_bytes' {
+							summary.counters.cache_cpu_bytes = counter_parts[1].int()
+						}
 						'cache_renderer_bytes' {
-							summary.cache_renderer_bytes = counter_parts[1].int()
+							summary.counters.cache_renderer_bytes = counter_parts[1].int()
 						}
-						'cache_budget' { summary.cache_budget = counter_parts[1].int() }
+						'cache_budget' { summary.counters.cache_budget = counter_parts[1].int() }
 						else {}
 					}
 				}
@@ -284,7 +289,7 @@ pub fn new_benchmark_live_trace() BenchmarkLiveTrace {
 		trace.warmup_frames = trace.frame_target / 6
 	}
 	trace.enabled = path.len > 0
-	trace.mark_phase('process_launch', launch_ns)
+	trace.mark_phase(.process_launch, launch_ns)
 	return trace
 }
 
@@ -332,7 +337,7 @@ fn (mut trace BenchmarkLiveTrace) end_frame(path string, scan_complete bool, con
 			'left:${trace.left_input_count},right:${trace.right_input_count}')
 		trace.write_event('pipeline_counters', trace.last_width, trace.last_height, trace.frame_count,
 			trace.pipeline_metrics.requested,
-			'displayed:${trace.pipeline_metrics.displayed},skipped:${trace.pipeline_metrics.skipped},coalesced:${trace.pipeline_metrics.coalesced},prefetch_requested:${trace.prefetch_metrics.requested},prefetched:${trace.prefetch_metrics.prefetched},prefetch_skipped:${trace.prefetch_metrics.skipped},prefetch_coalesced:${trace.prefetch_metrics.coalesced},prefetch_cancelled:${trace.prefetch_metrics.cancelled},decodes:${trace.pipeline_metrics.decode_count},prefetch_decodes:${trace.prefetch_metrics.decode_count},cache_hits:${trace.cache_metrics.hits},cache_misses:${trace.cache_metrics.misses},cache_updates:${trace.cache_metrics.updates},cache_evictions:${trace.cache_metrics.evictions},cache_invalidations:${trace.cache_metrics.invalidations},cache_resident_bytes:${trace.cache_metrics.resident_bytes},cache_peak_bytes:${trace.cache_metrics.peak_bytes},cache_cpu_bytes:${trace.cache_metrics.cpu_bytes},cache_renderer_bytes:${trace.cache_metrics.renderer_bytes},cache_budget:${trace.pipeline_metrics.cache_budget}')
+			'displayed:${trace.pipeline_metrics.displayed},skipped:${trace.pipeline_metrics.skipped},coalesced:${trace.pipeline_metrics.coalesced},prefetch_requested:${trace.prefetch_metrics.requested},prefetched:${trace.prefetch_metrics.prefetched},prefetch_skipped:${trace.prefetch_metrics.skipped},prefetch_coalesced:${trace.prefetch_metrics.coalesced},prefetch_cancelled:${trace.prefetch_metrics.cancelled},decodes:${trace.pipeline_metrics.decode_count},prefetch_decodes:${trace.prefetch_metrics.decode_count},cache_hits:${trace.cache_metrics.hits},cache_misses:${trace.cache_metrics.misses},cache_updates:${trace.cache_metrics.updates},cache_evictions:${trace.cache_metrics.evictions},cache_invalidations:${trace.cache_metrics.invalidations},cache_content_validations:${trace.cache_metrics.content_validations},cache_resident_bytes:${trace.cache_metrics.resident_bytes},cache_peak_bytes:${trace.cache_metrics.peak_bytes},cache_cpu_bytes:${trace.cache_metrics.cpu_bytes},cache_renderer_bytes:${trace.cache_metrics.renderer_bytes},cache_budget:${trace.pipeline_metrics.cache_budget}')
 		for frame in trace.frames {
 			trace.write_event('frame_interval', frame.width, frame.height, frame.order, frame.interval_us, '')
 		}
@@ -349,13 +354,13 @@ pub fn (mut trace BenchmarkLiveTrace) complete_frame() {
 	now_mono_us := i64(time.sys_mono_now() / 1000)
 	if trace.frame_content_ready && !trace.has_content {
 		trace.has_content = true
-		trace.mark_phase('first_content', u64(now_mono_us) * 1000)
+		trace.mark_phase(.first_content, u64(now_mono_us) * 1000)
 		trace.write_event('first_content', trace.last_width, trace.last_height, trace.frame_count,
 			now_mono_us - trace.launch_mono_us, '')
 	}
 	if trace.frame_scan_complete && !trace.has_scan {
 		trace.has_scan = true
-		trace.mark_phase('directory_completion', u64(now_mono_us) * 1000)
+		trace.mark_phase(.directory_completion, u64(now_mono_us) * 1000)
 		trace.write_event('scan_complete', trace.last_width, trace.last_height, trace.frame_count, 0, '')
 	}
 }
@@ -389,7 +394,7 @@ fn (mut trace BenchmarkLiveTrace) on_key(code ui2.KeyCode) {
 	now_mono_us := i64(time.sys_mono_now() / 1000)
 	if !trace.has_input {
 		trace.has_input = true
-		trace.mark_phase('first_input', u64(now_mono_us) * 1000)
+		trace.mark_phase(.first_input, u64(now_mono_us) * 1000)
 		trace.write_event('first_input', trace.last_width, trace.last_height, trace.frame_count,
 			now_mono_us - trace.launch_mono_us, action)
 	}
@@ -407,7 +412,7 @@ fn (mut trace BenchmarkLiveTrace) on_pointer(action string) {
 	now_mono_us := i64(time.sys_mono_now() / 1000)
 	if !trace.has_input {
 		trace.has_input = true
-		trace.mark_phase('first_input', u64(now_mono_us) * 1000)
+		trace.mark_phase(.first_input, u64(now_mono_us) * 1000)
 		trace.write_event('first_input', trace.last_width, trace.last_height, trace.frame_count,
 			now_mono_us - trace.launch_mono_us, action)
 	}
@@ -418,7 +423,7 @@ fn (mut trace BenchmarkLiveTrace) on_pointer(action string) {
 	}
 }
 
-pub fn (mut trace BenchmarkLiveTrace) mark_phase(phase string, at_ns u64) {
+pub fn (mut trace BenchmarkLiveTrace) mark_phase(phase ui2.StartupPhase, at_ns u64) {
 	if !trace.phase_trace.mark_at(phase, at_ns) {
 		return
 	}
@@ -432,7 +437,7 @@ fn (mut trace BenchmarkLiveTrace) write_phase_event(mark StartupPhaseMark) {
 		return
 	}
 	mut file := os.open_append(trace.path) or { return }
-	file.writeln('phase\t${mark.elapsed_ns / 1000}\t0\t0\t${mark.order}\t${mark.elapsed_ns / 1000}\t${mark.phase}') or {}
+	file.writeln('phase\t${mark.elapsed_ns / 1000}\t0\t0\t${mark.order}\t${mark.elapsed_ns / 1000}\t${ui2.startup_phase_name(mark.phase)}') or {}
 	file.close()
 }
 

@@ -1,10 +1,11 @@
 module main
 
+import crypto.sha256
 import os
 import ui2
 
 pub const default_sibling_cache_budget_bytes = 256 * 1024 * 1024
-pub const default_sibling_cache_neighbor_radius = 1
+pub const default_sibling_cache_radius = 1
 
 pub fn configured_sibling_cache_budget_bytes() int {
 	value := os.getenv('IMAGE_UI_SIBLING_CACHE_BUDGET_BYTES')
@@ -15,20 +16,26 @@ pub fn configured_sibling_cache_budget_bytes() int {
 	return if parsed < 0 { default_sibling_cache_budget_bytes } else { parsed }
 }
 
-pub fn configured_sibling_cache_neighbor_radius() int {
-	value := os.getenv('IMAGE_UI_SIBLING_CACHE_NEIGHBOR_RADIUS')
+pub fn configured_sibling_cache_radius() int {
+	value := os.getenv('IMAGE_UI_SIBLING_CACHE_RADIUS')
 	if value.len == 0 {
-		return default_sibling_cache_neighbor_radius
+		return default_sibling_cache_radius
 	}
 	parsed := value.int()
-	return if parsed < 0 { default_sibling_cache_neighbor_radius } else { parsed }
+	return if parsed < 0 { default_sibling_cache_radius } else { parsed }
 }
 
 pub struct SiblingFileSignature {
 pub:
-	exists        bool
-	size          u64
-	modified_unix i64
+	exists             bool
+	size               u64
+	modified_unix      i64
+	changed_unix       i64
+	device             u64
+	inode              u64
+	links              u64
+	content_digest     string
+	has_content_digest bool
 }
 
 struct SiblingResourceCacheEntry {
@@ -42,17 +49,18 @@ mut:
 
 pub struct SiblingResourceCacheMetrics {
 pub mut:
-	hits             int
-	misses           int
-	updates          int
-	invalidations    int
-	evictions        int
-	oversized        int
-	resident_entries int
-	resident_bytes   int
-	peak_bytes       int
-	cpu_bytes        int
-	renderer_bytes   int
+	hits                int
+	misses              int
+	updates             int
+	invalidations       int
+	evictions           int
+	oversized           int
+	content_validations int
+	resident_entries    int
+	resident_bytes      int
+	peak_bytes          int
+	cpu_bytes           int
+	renderer_bytes      int
 }
 
 pub struct SiblingResourceCache {
@@ -75,15 +83,62 @@ pub fn new_sibling_resource_cache(budget_bytes int) SiblingResourceCache {
 	}
 }
 
+pub fn sibling_file_digest(data []u8) string {
+	return sha256.sum(data).hex()
+}
+
+pub fn sibling_file_signature_from_bytes(path string, data []u8) SiblingFileSignature {
+	signature := sibling_file_signature(path)
+	if !signature.exists {
+		return signature
+	}
+	return SiblingFileSignature{
+		exists:             true
+		size:               signature.size
+		modified_unix:      signature.modified_unix
+		changed_unix:       signature.changed_unix
+		device:             signature.device
+		inode:              signature.inode
+		links:              signature.links
+		content_digest:     sibling_file_digest(data)
+		has_content_digest: true
+	}
+}
+
+pub fn sibling_file_content_signature(path string) SiblingFileSignature {
+	data := os.read_bytes(path) or { return sibling_file_signature(path) }
+	return sibling_file_signature_from_bytes(path, data)
+}
+
 pub fn sibling_file_signature(path string) SiblingFileSignature {
 	if info := os.stat(path) {
 		return SiblingFileSignature{
 			exists:        true
 			size:          info.size
 			modified_unix: info.mtime
+			changed_unix:  info.ctime
+			device:        info.dev
+			inode:         info.inode
+			links:         info.nlink
 		}
 	}
 	return SiblingFileSignature{}
+}
+
+fn sibling_file_identity_matches(cached SiblingFileSignature, current SiblingFileSignature) bool {
+	return cached.exists && current.exists && cached.size == current.size
+		&& cached.modified_unix == current.modified_unix && cached.changed_unix == current.changed_unix
+		&& cached.device == current.device && cached.inode == current.inode && cached.links == current.links
+}
+
+fn sibling_file_signature_matches(cached SiblingFileSignature, current SiblingFileSignature) bool {
+	if !sibling_file_identity_matches(cached, current) {
+		return false
+	}
+	if current.has_content_digest {
+		return cached.has_content_digest && cached.content_digest == current.content_digest
+	}
+	return true
 }
 
 fn (mut cache SiblingResourceCache) remove_path(path string) {
@@ -206,16 +261,19 @@ pub fn (mut cache SiblingResourceCache) get(path string, signature SiblingFileSi
 		cache.metrics.misses++
 		return none
 	}
-	if !signature.exists || entry.signature != signature {
+	if !sibling_file_signature_matches(entry.signature, signature) {
 		cache.metrics.invalidations++
 		cache.remove_path(path)
 		cache.metrics.misses++
 		return none
 	}
+	if signature.has_content_digest {
+		cache.metrics.content_validations++
+	}
 	cache.next_sequence++
 	cache.entries[path] = SiblingResourceCacheEntry{
 		resource:       entry.resource
-		signature:      entry.signature
+		signature:      if signature.has_content_digest { signature } else { entry.signature }
 		cpu_bytes:      entry.cpu_bytes
 		renderer_bytes: entry.renderer_bytes
 		sequence:       cache.next_sequence
@@ -224,6 +282,40 @@ pub fn (mut cache SiblingResourceCache) get(path string, signature SiblingFileSi
 	return entry.resource
 }
 
+pub fn (mut cache SiblingResourceCache) revalidate(path string, signature SiblingFileSignature) bool {
+	entry := cache.entries[path] or { return false }
+	cache.metrics.content_validations++
+	if !sibling_file_signature_matches(entry.signature, signature) {
+		cache.metrics.invalidations++
+		cache.remove_path(path)
+		return false
+	}
+	if signature.has_content_digest {
+		cache.entries[path] = SiblingResourceCacheEntry{
+			resource:       entry.resource
+			signature:      signature
+			cpu_bytes:      entry.cpu_bytes
+			renderer_bytes: entry.renderer_bytes
+			sequence:       entry.sequence
+		}
+	}
+	return true
+}
+
+pub fn (mut cache SiblingResourceCache) invalidate(path string) bool {
+	if path !in cache.entries {
+		return false
+	}
+	cache.remove_path(path)
+	cache.metrics.invalidations++
+	return true
+}
+
 pub fn (cache &SiblingResourceCache) contains(path string) bool {
 	return path in cache.entries
+}
+
+pub fn (cache &SiblingResourceCache) signature(path string) ?SiblingFileSignature {
+	entry := cache.entries[path] or { return none }
+	return entry.signature
 }

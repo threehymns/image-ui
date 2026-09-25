@@ -281,7 +281,7 @@ pub fn (mut app App) integrate_batch(batch SiblingBatch) {
 	natural_sort(mut incoming)
 	had_playlist := app.playlist.len > 0
 	app.playlist = merge_sorted_paths(app.playlist, incoming)
-	if batch.is_first_content || batch.is_neighborhood || !had_playlist {
+	if batch.is_first_content || batch.is_sibling_window || !had_playlist {
 		app.has_first_content = true
 	}
 
@@ -476,8 +476,9 @@ pub fn (mut app App) flip_v() {
 }
 
 pub fn (app &App) transparency_background_visible() bool {
-	return app.show_checkerboard && (app.image_resource.state != .ready
-		|| app.image_resource.opacity != .proven_opaque)
+	displayed := app.displayed_image_resource()
+	return app.show_checkerboard && (displayed.state != .ready
+		|| displayed.opacity != .proven_opaque)
 }
 
 pub fn (mut app App) toggle_checkerboard() {
