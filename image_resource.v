@@ -41,20 +41,26 @@ pub fn classify_image_opacity(channels int, pixels []u8) ui2.ImageOpacity {
 	if channels != 4 || pixels.len < 4 {
 		return .unknown
 	}
-	for index := 3; index < pixels.len; index += 4 {
-		if pixels[index] != 255 {
-			return .has_alpha
+	// A full-resolution image has millions of alpha samples, so the scan uses
+	// unchecked pointer steps instead of bounds-checked slice indexing.
+	unsafe {
+		start := &u8(pixels.data) + 3
+		end := &u8(pixels.data) + pixels.len
+		for start < end {
+			if *start != 255 {
+				return .has_alpha
+			}
+			start += 4
 		}
 	}
 	return .proven_opaque
 }
 
 pub fn decode_stbi_image(path string) !DecodedImage {
-	image_bytes := os.read_bytes(path) or {
-		return error('Unable to read image: ${err.msg()}')
-	}
-	mut decoded := stbi.load_from_memory(image_bytes.data, image_bytes.len, stbi.LoadParams{}) or {
-		return error('Unable to load image: ${err.msg()}')
+	// The decoder reads the file inside stb, so a full-resolution image does not
+	// need a second copy of its encoded bytes in managed memory.
+	mut decoded := stbi.load(path, stbi.LoadParams{}) or {
+		return error('Unable to load image: ${path}')
 	}
 	width := decoded.width
 	height := decoded.height
@@ -68,16 +74,16 @@ pub fn decode_stbi_image(path string) !DecodedImage {
 	copy(mut pixels, unsafe { decoded.data.vbytes(pixel_len) })
 	opacity := classify_image_opacity(channels, pixels)
 	decoded.free()
+	// Decoding stays off the content-digest path. Cache lookups compare stat
+	// identity, and hashing a full-resolution file here cost seconds per image.
 	return DecodedImage{
-		width:              width
-		height:             height
-		channels:           4
-		pixels:             pixels
-		opacity:            opacity
-		renderer_bytes:     pixel_len
-		source_size:        image_bytes.len
-		content_digest:     sibling_file_digest(image_bytes)
-		has_content_digest: true
+		width:          width
+		height:         height
+		channels:       4
+		pixels:         pixels
+		opacity:        opacity
+		renderer_bytes: pixel_len
+		source_size:    if info := os.stat(path) { info.size } else { 0 }
 	}
 }
 
@@ -945,9 +951,6 @@ fn (mut pipeline ImagePipeline) apply_current_resource_validation(result Current
 			pipeline.sync_cache_metrics()
 			pipeline.update_retention()
 		}
-		return
-	}
-	if !result.signature.has_content_digest {
 		return
 	}
 	if pipeline.resident_signature.exists

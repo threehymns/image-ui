@@ -74,7 +74,7 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 | `image_worker_load_alpha`, `image_worker_load_opaque`, `image_worker_load_4k` | The shared cancellation-aware worker resource-load seam, including one decoder invocation |
 | `sibling_cache_cold`, `sibling_cache_warm` | Full-resolution decode, signature capture, cache insertion, and resident lookup at the selected byte budget |
 | `sibling_cache_4k_cold`, `sibling_cache_4k_warm` | The same cache path with the 4K fixture and a 256 MiB budget |
-| `sibling_cache_invalidation` | A changed file identity removes the resident entry; periodic full-file SHA-256 validation catches same-size rewrites when portable stat data is unchanged |
+| `sibling_cache_invalidation` | A changed file identity removes the resident entry; periodic full-file SHA-256 validation catches same-size rewrites when portable stat data is unchanged, for files within `sibling_file_digest_budget` |
 | `sibling_discovery` | Spawn, complete directory enumeration, natural sort, channel batches, and final batch through the current scanner |
 | `sibling_navigation` | Playlist step plus the production resource pipeline decode and result handoff |
 | `resident_sibling_switch` | One resident small-Sibling switch from key event through cache lookup, commit, and screen construction |
@@ -93,7 +93,7 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 `screen_construct_4k`, the four `pan_4k_*`/`zoom_4k_*` rows, `frame_prepare_4k`, and `toggle_checkerboard_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements. The resident-switch rows likewise measure the state transition and UI2 element construction; their fixture decode and cache population happen before the stopwatch starts and are identified separately from measured decode counters.
 
-Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations/content validations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Neighborhood candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. Cache identity checks use portable stat fields; periodic current-resource validation performs the complete-file SHA-256 read in one bounded background worker; the UI poll path is nonblocking, so validation is not claimed to be I/O-free. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
+Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations/content validations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Neighborhood candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. Cache identity checks use portable stat fields; periodic current-resource validation performs a complete-file SHA-256 read in one bounded background worker for files within `sibling_file_digest_budget`, and falls back to stat identity above it; the UI poll path is nonblocking, so validation is not claimed to be I/O-free. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
 
 ### Startup phase trace
 
@@ -263,7 +263,7 @@ The current live harness cannot prove presented-frame GPU time. A later resource
 
 ## Final #26 validation report
 
-Validation source: playlist snapshot implementation commit `ec50be4` with UI2 submodule `3220747`. The benchmark records the exact source state for every run. Timing thresholds remain reporting-only in hosted CI. The report separates measured evidence, targets, and unavailable platform work.
+Validation source: playlist snapshot implementation commit `ec50be4`, decode and texture-creation follow-up on the same branch, with UI2 submodule `e65e562`. The benchmark records the exact source state for every run. Timing thresholds remain reporting-only in hosted CI. The report separates measured evidence, targets, and unavailable platform work.
 
 ### Commands and evidence
 
@@ -284,6 +284,48 @@ Validation source: playlist snapshot implementation commit `ec50be4` with UI2 su
 The root benchmark has separate `pan_4k_transparent`, `pan_4k_opaque`, `zoom_4k_transparent`, and `zoom_4k_opaque` rows. These rows construct Viewer/UI2 elements at 3840x2160; they do not measure GPU presentation. `decodes` and `prefetch decodes` count decoder invocations. Cache hits and prefetched resources do not increment those counters. Cache columns include hits, misses, updates, evictions, invalidations, content validations, resident/peak bytes, CPU/renderer bytes, and the configured budget.
 
 The `playlist_snapshot_20k` row times only UI-thread `App.integrate_batch` calls while the scanner produces first content, the prioritized Neighborhood, and one final natural-order snapshot from 20,000 synthetic paths. With 2 warmups and 10 iterations it measured 0.20 ms median and 0.43 ms p95, integrating 3 batches, displaying 20,000 Siblings, and replacing 51 provisional entries. A pre-fix live diagnostic with 96x64 images and 20,000 Siblings measured repeated `poll_scanner` calls at 6.9-249 ms and one key event at 12.8 ms as the UI thread repeatedly merged the growing playlist; source enumeration and natural sorting remain background scanner work.
+
+### 4K image switching cost
+
+A live probe over the real decoder and renderer separated the cost of displaying one 3840x2160 image (33,177,600 bytes) on the AMD Radeon PRO WX 3200 Wayland session. Each row is one measured call, not an estimate.
+
+| Stage | Before | After |
+| --- | ---: | ---: |
+| Decode total, background worker | 2492-4677 ms | 382-461 ms |
+| File content digest during decode, portable SHA-256 | 2029-3973 ms | 0 ms |
+| Opacity classification, V loop over alpha samples | 165-284 ms | 33-50 ms |
+| Render-side `gg.Image.init_sokol_image` for the texture | 359-517 ms | 18-47 ms |
+| Sokol `make_image` queue call | 11-20 us | 11-20 us |
+| Present frame that uploads and presents the texture | 25-163 ms | 25-163 ms |
+
+Two root causes were found and removed. Decoding hashed the entire file with the portable SHA-256 implementation, which runs near 19 MB/s; the digest is not used by any cache-hit path, so decode now reports file size only. UI2 asked the renderer for a full CPU mipmap chain by leaving `nr_mipmaps` at 0, and gg expands that chain on the CPU with a per-pixel, per-channel averaging loop before the texture exists; image resources now request a single mip level, matching the repeat tile.
+
+The remaining decode cost is stb's own decode (255-368 ms for these BMP fixtures, 69-126 ms for the TGA fixture) plus a 22-45 ms copy into the retained pixel buffer. The 25-163 ms present frame is the deferred GL upload and is unchanged.
+
+Live Wayland evidence for the same change, four cold/warm transparent/opaque cases:
+
+| Measurement | Cold opaque | Cold transparent | Warm opaque | Warm transparent |
+| --- | ---: | ---: | ---: | ---: |
+| Process launch to first content | 779.03 ms | 413.64 ms | 1501.79 ms | 412.93 ms |
+| Process launch to first input | 1706.10 ms | 935.69 ms | 3192.19 ms | 988.59 ms |
+| Sibling requested / displayed / skipped / coalesced | 17 / 16 / 1 / 0 | 16 / 16 / 0 / 0 | 17 / 12 / 5 / 0 | 16 / 16 / 0 / 0 |
+| Decode count / prefetch decode count | 3 / 5 | 1 / 4 | 7 / 9 | 1 / 4 |
+| Frame callback median | 16.77 ms | 16.80 ms | 16.80 ms | 16.78 ms |
+| Frame callback p95 | 18.43 ms | 28.07 ms | 28.79 ms | 28.54 ms |
+| Cache resident / peak bytes | 265,469,952 | 199,114,752 | 265,469,952 | 199,114,752 |
+
+The recorded 4K run before this change reported first content at 6846.06 ms, 8113.84 ms, 4045.67 ms, and 4638.39 ms for the same four cases, and displayed 2, 10, 3, and 9 of 16-17 requested Siblings. Pan and zoom medians are not compared here: repeated runs of unchanged code on this host produced 0.26-12.98 ms for the same pan case, so those values are dominated by run-to-run variance on this machine and are not claimed as an improvement or a regression.
+
+The checked-in headless benchmark reproduces the decode improvement without a compositor, with 2 warmups and 10 measured iterations:
+
+| Row | Median | p95 | Status |
+| --- | ---: | ---: | --- |
+| `image_worker_load_4k` | 262.91 ms | 279.57 ms | ok |
+| `image_pipeline_load_4k` | 440.39 ms | 537.81 ms | ok |
+| `resident_sibling_switch_4k` | 0.07 ms | 0.09 ms | ok |
+| `playlist_snapshot_20k` | 0.25 ms | 0.26 ms | ok |
+
+All 37 benchmark rows reported `status=ok` with zero checksum mismatches on this run.
 
 ### Live Wayland evidence
 
@@ -317,4 +359,5 @@ The frame values are Viewer build-callback cadence, not presented-frame GPU time
 - The scanner still emits first content and the prioritized Neighborhood before the full natural sort. It then sends one final playlist snapshot, which the UI installs within a four-batch, 1 ms per-frame poll budget instead of merging every discovery batch on the render thread.
 - AppKit, UIKit, and Windows source/contract checks are present. Native runtime builds, screenshots, and visual regressions were not run on this Linux host. The full UI2 aggregate suite still has unrelated host/platform failures; the focused contract checks pass.
 - Portable V exposes `os.ls` but no streaming directory iterator. Direct targets are sent before directory enumeration and sorting; directory launches document the remaining `os.ls` enumeration boundary. No Viewer platform branch was added.
+- The portable SHA-256 content digest is now bounded to files within `sibling_file_digest_budget` (1 MiB). Larger files are validated by stat identity, which keeps nanosecond timestamps, size, inode, device, and link count. Revalidation still detects ordinary rewrites for every file size; only a rewrite that preserves size and nanosecond mtime on a file above the budget is no longer detected by content.
 - The 4K60 target requires an exact 3840x2160 measured viewport and a post-present fence or GPU timestamp. The current evidence does not satisfy that prerequisite.

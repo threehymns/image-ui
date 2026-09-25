@@ -83,6 +83,12 @@ pub fn new_sibling_resource_cache(budget_bytes int) SiblingResourceCache {
 	}
 }
 
+// A content digest reads and hashes the whole file. Large images cost seconds of
+// CPU at the portable SHA-256 throughput, so only files within this budget are
+// hashed. Larger files rely on stat identity, which already covers ordinary
+// rewrites because the signature keeps nanosecond timestamps and inode identity.
+pub const sibling_file_digest_budget = 1024 * 1024
+
 pub fn sibling_file_digest(data []u8) string {
 	return sha256.sum(data).hex()
 }
@@ -90,6 +96,9 @@ pub fn sibling_file_digest(data []u8) string {
 pub fn sibling_file_signature_from_bytes(path string, data []u8) SiblingFileSignature {
 	signature := sibling_file_signature(path)
 	if !signature.exists {
+		return signature
+	}
+	if data.len > sibling_file_digest_budget {
 		return signature
 	}
 	return SiblingFileSignature{
@@ -106,7 +115,11 @@ pub fn sibling_file_signature_from_bytes(path string, data []u8) SiblingFileSign
 }
 
 pub fn sibling_file_content_signature(path string) SiblingFileSignature {
-	data := os.read_bytes(path) or { return sibling_file_signature(path) }
+	stat := sibling_file_signature(path)
+	if !stat.exists || stat.size > sibling_file_digest_budget {
+		return stat
+	}
+	data := os.read_bytes(path) or { return stat }
 	return sibling_file_signature_from_bytes(path, data)
 }
 
@@ -294,7 +307,9 @@ pub fn (mut cache SiblingResourceCache) get(path string, signature SiblingFileSi
 
 pub fn (mut cache SiblingResourceCache) revalidate(path string, signature SiblingFileSignature) bool {
 	entry := cache.entries[path] or { return false }
-	cache.metrics.content_validations++
+	if entry.signature.has_content_digest && signature.has_content_digest {
+		cache.metrics.content_validations++
+	}
 	if !sibling_file_signature_validates(entry.signature, signature) {
 		cache.metrics.invalidations++
 		cache.remove_path(path)

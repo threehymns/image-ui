@@ -198,6 +198,77 @@ fn test_pipeline_revalidates_current_displayed_resource_without_request_cache_hi
 	assert !pipeline.take_current_resource_invalidated()
 }
 
+fn test_sibling_file_content_signature_hashes_only_files_within_the_digest_budget() {
+	small := os.join_path(os.temp_dir(), 'image-ui-digest-small-${time.ticks()}.png')
+	os.write_bytes(small, []u8{len: 64, init: 7}) or { panic(err) }
+	defer {
+		os.rm(small) or {}
+	}
+	small_signature := sibling_file_content_signature(small)
+	assert small_signature.has_content_digest
+	assert small_signature.content_digest.len == 64
+
+	large := os.join_path(os.temp_dir(), 'image-ui-digest-large-${time.ticks()}.png')
+	os.write_bytes(large, []u8{len: sibling_file_digest_budget + 1, init: 9}) or { panic(err) }
+	defer {
+		os.rm(large) or {}
+	}
+	large_signature := sibling_file_content_signature(large)
+	assert !large_signature.has_content_digest
+	assert large_signature.content_digest == ''
+	assert large_signature.exists
+	assert large_signature.size == sibling_file_digest_budget + 1
+}
+
+fn test_pipeline_current_validation_detects_stat_change_without_a_content_digest() {
+	path := os.join_path(os.temp_dir(), 'image-ui-stat-current-${time.ticks()}.png')
+	os.write_file(path, 'aaaa') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	resource := sibling_cache_test_resource(path)
+	resident_signature := sibling_file_signature(path)
+	assert !resident_signature.has_content_digest
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_resident_with_signature(resource, resident_signature)
+	mut changed := SiblingFileSignature{
+		exists:        resident_signature.exists
+		size:          resident_signature.size + 4
+		modified_unix: resident_signature.modified_unix
+		changed_unix:  resident_signature.changed_unix
+		device:        resident_signature.device
+		inode:         resident_signature.inode
+		links:         resident_signature.links
+	}
+	pipeline.apply_current_resource_validation(CurrentResourceValidationResult{
+		path:      path
+		epoch:     pipeline.current_validation_epoch
+		signature: changed
+	})
+	assert pipeline.take_current_resource_invalidated()
+	assert !pipeline.cache.contains(path)
+}
+
+fn test_pipeline_current_validation_keeps_unchanged_stat_only_resident() {
+	path := os.join_path(os.temp_dir(), 'image-ui-stat-unchanged-${time.ticks()}.png')
+	os.write_file(path, 'aaaa') or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	resource := sibling_cache_test_resource(path)
+	resident_signature := sibling_file_signature(path)
+	mut pipeline := new_manual_image_pipeline()
+	pipeline.set_resident_with_signature(resource, resident_signature)
+	pipeline.apply_current_resource_validation(CurrentResourceValidationResult{
+		path:      path
+		epoch:     pipeline.current_validation_epoch
+		signature: sibling_file_signature(path)
+	})
+	assert !pipeline.take_current_resource_invalidated()
+	assert pipeline.cache.contains(path)
+	assert pipeline.resident_resource.state == .ready
+}
+
 fn test_pipeline_current_validation_is_nonblocking_and_invalidates_changed_digest() {
 	path := os.join_path(os.temp_dir(), 'image-ui-async-current-${time.ticks()}.png')
 	os.write_file(path, 'aaaa') or { panic(err) }

@@ -144,6 +144,19 @@ fn test_default_stbi_decoder_returns_rgba_metadata_and_opacity() {
 	assert decoded.pixels[3] == 255
 }
 
+fn test_default_stbi_decoder_does_not_hash_file_contents() {
+	path := image_resource_test_path()
+	bytes := image_resource_test_bmp()
+	os.write_bytes(path, bytes) or { panic(err) }
+	defer {
+		os.rm(path) or {}
+	}
+	decoded := decode_stbi_image(path) or { panic(err) }
+	assert !decoded.has_content_digest
+	assert decoded.content_digest == ''
+	assert decoded.source_size == u64(bytes.len)
+}
+
 fn test_image_resource_opacity_classification_is_explicit() {
 	assert classify_image_opacity(3, []u8{len: 3, init: 1}) == .proven_opaque
 	assert classify_image_opacity(4, []u8{len: 8, init: 255}) == .proven_opaque
@@ -152,6 +165,17 @@ fn test_image_resource_opacity_classification_is_explicit() {
 	assert classify_image_opacity(4, alpha_pixels) == .has_alpha
 	assert classify_image_opacity(2, []u8{len: 2, init: 1}) == .unknown
 	assert classify_image_opacity(4, []u8{}) == .unknown
+}
+
+fn test_image_resource_opacity_classification_scans_large_buffers() {
+	mut opaque := []u8{len: 4 * 4096, init: 255}
+	assert classify_image_opacity(4, opaque) == .proven_opaque
+	mut transparent := []u8{len: 4 * 4096, init: 255}
+	transparent[4 * 4095 + 3] = 0
+	assert classify_image_opacity(4, transparent) == .has_alpha
+	mut leading := []u8{len: 4 * 4096, init: 255}
+	leading[3] = 128
+	assert classify_image_opacity(4, leading) == .has_alpha
 }
 
 fn test_app_loading_resource_keeps_previous_metadata_until_commit() {
