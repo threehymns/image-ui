@@ -84,17 +84,17 @@ Every row includes warmup count, fixed iteration count, cache label, byte budget
 
 ## Sibling Resource Cache baseline
 
-The following rows were recorded on 2026-09-25 from commit `d0fafbf4b136` with 2 warmups and 10 measured iterations. The warm rows prefill the cache before starting the timer, so their timer covers signature validation and resident lookup. Byte totals include decoded CPU bytes and renderer bytes.
+The following rows were recorded on 2026-09-25 from commit `2defcde3dbe4` with 2 warmups and 10 measured iterations. The warm rows prefill the cache before starting the timer, so their timer covers signature validation and resident lookup. Byte totals include decoded CPU bytes and renderer bytes.
 
 | Case | Budget | Median ms | p95 ms | Hits | Misses | Updates | Evictions | Resident bytes | Checksum |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `sibling_cache_cold`, opaque | 16 KiB | 0.27 | 0.31 | 0 | 0 | 0 | 0 | 0 | `3e3b230aed0713ef` |
+| `sibling_cache_cold`, opaque | 16 KiB | 0.26 | 0.26 | 0 | 0 | 0 | 0 | 0 | `3e3b230aed0713ef` |
 | `sibling_cache_warm`, opaque | 16 KiB | 0.00 | 0.00 | 0 | 1 | 0 | 0 | 0 | `300000005190` |
-| `sibling_cache_cold`, opaque | 32 KiB | 0.27 | 0.28 | 0 | 0 | 0 | 0 | 0 | `3e3b230aed0713ef` |
+| `sibling_cache_cold`, opaque | 32 KiB | 0.23 | 0.24 | 0 | 0 | 0 | 0 | 0 | `3e3b230aed0713ef` |
 | `sibling_cache_warm`, opaque | 32 KiB | 0.00 | 0.00 | 0 | 1 | 0 | 0 | 0 | `300000005190` |
-| `sibling_cache_cold`, opaque | 64 KiB | 0.27 | 0.29 | 0 | 0 | 0 | 0 | 49,152 | `3e3b220aed07123c` |
+| `sibling_cache_cold`, opaque | 64 KiB | 0.23 | 0.27 | 0 | 0 | 0 | 0 | 49,152 | `3e3b220aed07123c` |
 | `sibling_cache_warm`, opaque | 64 KiB | 0.00 | 0.00 | 1 | 0 | 0 | 0 | 49,152 | `3e3b220aed07123c` |
-| `sibling_cache_4k_cold`, large-4k | 256 MiB | 414.14 | 808.85 | 0 | 0 | 0 | 0 | 66,355,200 | `84f927381687d2bf` |
+| `sibling_cache_4k_cold`, large-4k | 256 MiB | 320.44 | 340.72 | 0 | 0 | 0 | 0 | 66,355,200 | `84f927381687d2bf` |
 | `sibling_cache_4k_warm`, large-4k | 256 MiB | 0.00 | 0.00 | 1 | 0 | 0 | 0 | 66,355,200 | `84f927381687d2bf` |
 
 The 16 KiB and 32 KiB opaque rows reject the 49,152-byte decoded-plus-renderer entry. The 64 KiB row retains it. The 4K row retains 33,177,600 CPU bytes plus 33,177,600 renderer bytes. The Filmstrip Thumbnail Cache is not part of these totals.
