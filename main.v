@@ -18,27 +18,24 @@ pub const error_text_hex = u32(0xdc5a5a)
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	core                       App
-	image_loader               ImageResourceLoader
-	window_ready               bool
-	is_dragging                bool
-	drag_prev_x                f64
-	drag_prev_y                f64
-	last_click_time            i64
-	last_click_x               f64
-	last_click_y               f64
-	scanned_dir                string
-	scanner_ch                 chan SiblingBatch
-	has_scanner_ch             bool
-	scanner_cancel             chan bool
-	has_scanner_cancel         bool
-	requested_window_w         int
-	requested_window_h         int
-	checkerboard_key           string
-	checkerboard_pending_key   string
-	checkerboard_stable_frames int
-	checkerboard_layer         ui2.Element
-	benchmark_live             BenchmarkLiveTrace
+	core                 App
+	image_loader         ImageResourceLoader
+	window_ready         bool
+	is_dragging          bool
+	drag_prev_x          f64
+	drag_prev_y          f64
+	last_click_time      i64
+	last_click_x         f64
+	last_click_y         f64
+	scanned_dir          string
+	scanner_ch           chan SiblingBatch
+	has_scanner_ch       bool
+	scanner_cancel       chan bool
+	has_scanner_cancel   bool
+	requested_window_w   int
+	requested_window_h   int
+	transparency_pattern ui2.RepeatPattern
+	benchmark_live       BenchmarkLiveTrace
 }
 
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
@@ -187,37 +184,11 @@ pub fn (mut app ViewerApp) load_image(path string) {
 	app.load_image_internal(path, true, false)
 }
 
-fn (mut app ViewerApp) get_checkerboard_layer(win_w int, win_h int) ui2.Element {
-	key := '${win_w}:${win_h}'
-	if app.checkerboard_key.len == 0 {
-		app.checkerboard_layer = build_checkerboard_layer(win_w, win_h)
-		app.checkerboard_key = key
-		return app.checkerboard_layer
+fn (mut app ViewerApp) get_transparency_pattern() ui2.RepeatPattern {
+	if !app.transparency_pattern.valid() {
+		app.transparency_pattern = checkerboard_pattern()
 	}
-
-	app.checkerboard_layer = ui2.Element{
-		...app.checkerboard_layer
-		frame: ui2.rect(0, 0, f64(win_w), f64(win_h))
-	}
-	if key == app.checkerboard_key {
-		app.checkerboard_pending_key = ''
-		app.checkerboard_stable_frames = 0
-		return app.checkerboard_layer
-	}
-	if app.checkerboard_pending_key != key {
-		app.checkerboard_pending_key = key
-		app.checkerboard_stable_frames = 0
-		return app.checkerboard_layer
-	}
-	app.checkerboard_stable_frames++
-	if app.checkerboard_stable_frames < 2 {
-		return app.checkerboard_layer
-	}
-	app.checkerboard_layer = build_checkerboard_layer(win_w, win_h)
-	app.checkerboard_key = key
-	app.checkerboard_pending_key = ''
-	app.checkerboard_stable_frames = 0
-	return app.checkerboard_layer
+	return app.transparency_pattern
 }
 
 pub fn (mut app ViewerApp) build_screen() ui2.Element {
@@ -297,13 +268,10 @@ pub fn (mut app ViewerApp) build_screen_at_size(win_w int, win_h int) ui2.Elemen
 			img_el = ui2.with_pixelated(img_el)
 		}
 
-		// Subtle neutral checkerboard grid directly under visual image bounds,
-		// clipped to canvas. Restores the transparency background lost in the
-		// ui2 port; toggle with the `t` key.
 		mut screen_children := []ui2.Element{}
-		if app.core.show_checkerboard {
-			screen_children << app.get_checkerboard_layer(win_w, win_h)
-			screen_children << checkerboard_mask_elements(app.core.viewport, win_w, win_h)
+		if app.core.transparency_background_visible() {
+			screen_children << ui2.pattern_background('transparency_background',
+				app.get_transparency_pattern(), checkerboard_reveal_rect(app.core.viewport))
 		}
 		screen_children << ui2.draggable_view_with_cursor('canvas_bg',
 			ui2.rect(0, 0, f64(win_w), f64(win_h)),

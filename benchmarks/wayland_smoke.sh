@@ -30,7 +30,6 @@ cleanup() {
 		niri msg action focus-window --id "$original_focus" >/dev/null 2>&1 || true
 	fi
 	rm -rf "$tmp"
-	rm -f /tmp/image-ui-checkerboard-v1-1024x768.bmp /tmp/image-ui-checkerboard-v1-1920x1080.bmp /tmp/image-ui-checkerboard-v1-3840x2160.bmp /tmp/image-ui-checkerboard-v1-1916x2094.bmp /tmp/image-ui-checkerboard-v1-3840x2094.bmp
 }
 trap cleanup EXIT INT TERM
 
@@ -59,9 +58,6 @@ run_smoke() {
 	log="$tmp/wayland-$cache.log"
 	before_ids=$(niri msg --json windows | jq -c '[.[].id]')
 	rm -f "$trace" "$trace.resize_request_us" "$trace.resize_request_width"
-	if [[ $cache == cold ]]; then
-		rm -f /tmp/image-ui-checkerboard-v1-1024x768.bmp /tmp/image-ui-checkerboard-v1-1920x1080.bmp /tmp/image-ui-checkerboard-v1-3840x2160.bmp /tmp/image-ui-checkerboard-v1-1916x2094.bmp /tmp/image-ui-checkerboard-v1-3840x2094.bmp
-	fi
 	launch_us=$(date +%s%6N)
 	IMAGE_UI_BENCHMARK_CACHE="$cache" \
 	IMAGE_UI_BENCHMARK_TRACE="$trace" \

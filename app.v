@@ -431,7 +431,11 @@ pub fn (mut app App) flip_v() {
 	app.viewport = flip_vertical(app.viewport)
 }
 
-// toggle_checkerboard flips the transparency grid behind the image.
+pub fn (app &App) transparency_background_visible() bool {
+	return app.show_checkerboard && (app.image_resource.state != .ready
+		|| app.image_resource.opacity != .proven_opaque)
+}
+
 pub fn (mut app App) toggle_checkerboard() {
 	app.show_checkerboard = !app.show_checkerboard
 }

@@ -62,7 +62,7 @@ The CPU and screen-construction suite needs no display server:
 make benchmark
 ```
 
-The live niri/Wayland smoke records cold and warm checkerboard-cache runs, process launch, first content, real key input, resize, Sibling switching, pan, zoom, and Viewer frame-callback cadence:
+The live niri/Wayland smoke records process launch, first content, real key input, resize, Sibling switching, pan, zoom, and Viewer frame-callback cadence. It reports the actual measured viewport and does not treat a 4K image fixture as a 4K viewport:
 ```bash
 make benchmark-wayland
 ```
@@ -71,14 +71,14 @@ Use `--warmup`, `--iterations`, and `--cache` through `BENCHMARK_ARGS` to contro
 
 ## Performance claims
 
-The checked-in measurements describe the current path. The current 4K image metadata decode, full-window checkerboard generation, and synchronous Sibling decode are measured costs, not guarantees. Sub-10ms complete startup, 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom remain targets. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence.
+The checked-in measurements describe the current path. The current 4K image metadata decode and synchronous Sibling decode are measured costs, not guarantees; the transparency background uses a small repeat tile rather than a full-window raster. Sub-10ms complete startup, 60 FPS at 3840x2160, p95 presented-frame time below 16.7ms, and 8.3ms headroom remain targets. The live suite records Viewer build-callback cadence because UI2 does not expose a post-present GPU fence.
 
 ## Forks & upstream
 
 This project depends on two personal forks, both tracked on their `dev` branches. Each exists only to carry a small patch set until it lands upstream:
 
 - **[threehymns/v](https://github.com/threehymns/v)** (toolchain): folds Shift-modified keysyms to lowercase in the Sokol Wayland backend so Shift+letter shortcuts resolve, and stops V3 codegen from emitting `typedef struct T T;` guesses for types owned by system headers (e.g. X11's anonymous-struct typedefs), which broke every local build. CI builds this fork from source.
-- **[threehymns/ui2](https://github.com/threehymns/ui2)** (vendored above as the `ui2/` submodule): forwards unhandled scroll gestures as `scroll:` events, adds `pixelated` sampling and `flip_h`/`flip_v` mirroring, and decodes keyboard modifiers with the correct `sapp.Modifier` masks.
+- **[threehymns/ui2](https://github.com/threehymns/ui2)** (vendored above as the `ui2/` submodule): forwards unhandled scroll gestures as `scroll:` events, adds `pixelated` sampling and `flip_h`/`flip_v` mirroring, decodes keyboard modifiers with the correct `sapp.Modifier` masks, and provides a backend-neutral repeat-pattern background contract.
 
 ## Architecture & Domain Model
 

@@ -53,9 +53,12 @@ fn test_viewer_screen_can_be_built_at_explicit_size() {
 
 	screen := app.build_screen_at_size(3840, 2160)
 	assert screen.children.len == 2
-	assert screen.children[0].id == 'checkerboard_layer'
-	assert screen.children[0].frame.width == 3840.0
-	assert screen.children[0].frame.height == 2160.0
+	assert screen.children[0].id == 'transparency_background'
+	assert screen.children[0].background.pattern.valid()
+	assert screen.children[0].background.pattern.pixel_width == 32
+	assert screen.children[0].background.pattern.pixel_height == 32
+	assert screen.children[0].background.pattern.pixel_width < 3840
+	assert screen.children[0].background.pattern.pixel_height < 2160
 	assert app.core.canvas_w == 3840
 	assert app.core.canvas_h == 2160
 }
@@ -93,6 +96,8 @@ fn test_live_trace_summary_reports_required_phases_and_frame_percentiles() {
 	assert summary.process_to_first_input_ns == 20_000_000
 	assert summary.toggle_to_frame_ns == 1_667_000
 	assert summary.resize_to_frame_ns == 0
+	assert summary.viewport_width == 2560
+	assert summary.viewport_height == 1440
 	assert summary.frame_median_ns == 16_667_000
 	assert summary.frame_p95_ns == 16_667_000
 	assert summary.frame_samples == 2
