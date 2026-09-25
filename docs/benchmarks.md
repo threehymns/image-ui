@@ -263,13 +263,13 @@ The current live harness cannot prove presented-frame GPU time. A later resource
 
 ## Final #26 validation report
 
-Validation source: integration commit `3e0ec3a` with UI2 submodule `3220747`. The benchmark records the exact source state for every run. Timing thresholds remain reporting-only in hosted CI. The report separates measured evidence, targets, and unavailable platform work.
+Validation source: playlist snapshot implementation commit `ec50be4` with UI2 submodule `3220747`. The benchmark records the exact source state for every run. Timing thresholds remain reporting-only in hosted CI. The report separates measured evidence, targets, and unavailable platform work.
 
 ### Commands and evidence
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Root correctness | `make test` | 16/16 test files passed, including resource state, one-decode counters, cache invalidation, repeat phase/clipping, startup phases, and key-repeat coverage |
+| Root correctness | `make test` | 17/17 test files passed, including resource state, one-decode counters, cache invalidation, repeat phase/clipping, startup phases, key-repeat, and 20,000-Sibling playlist coverage |
 | Root builds | `make build`, `make build-wayland`, and `make build-x11` | Passed on the Linux host |
 | Headless benchmark | `make benchmark BENCHMARK_ARGS="--warmup 2 --iterations 10 --cache both"` | Passed; every row reported `status=ok` with fixed-iteration checksums and zero mismatches |
 | Benchmark compile | `make benchmark-build` | Passed |
@@ -282,6 +282,8 @@ Validation source: integration commit `3e0ec3a` with UI2 submodule `3220747`. Th
 | GitHub CI | PR #27 build-and-test workflow | Build, benchmark compile, and tests passed |
 
 The root benchmark has separate `pan_4k_transparent`, `pan_4k_opaque`, `zoom_4k_transparent`, and `zoom_4k_opaque` rows. These rows construct Viewer/UI2 elements at 3840x2160; they do not measure GPU presentation. `decodes` and `prefetch decodes` count decoder invocations. Cache hits and prefetched resources do not increment those counters. Cache columns include hits, misses, updates, evictions, invalidations, content validations, resident/peak bytes, CPU/renderer bytes, and the configured budget.
+
+The `playlist_snapshot_20k` row times only UI-thread `App.integrate_batch` calls while the scanner produces first content, the prioritized Neighborhood, and one final natural-order snapshot from 20,000 synthetic paths. With 2 warmups and 10 iterations it measured 0.20 ms median and 0.43 ms p95, integrating 3 batches, displaying 20,000 Siblings, and replacing 51 provisional entries. A pre-fix live diagnostic with 96x64 images and 20,000 Siblings measured repeated `poll_scanner` calls at 6.9-249 ms and one key event at 12.8 ms as the UI thread repeatedly merged the growing playlist; source enumeration and natural sorting remain background scanner work.
 
 ### Live Wayland evidence
 
@@ -311,7 +313,8 @@ The frame values are Viewer build-callback cadence, not presented-frame GPU time
 ### Acceptance audit and platform gaps
 
 - The Viewer uses one generic UI2 `ImageResource` and `RepeatPattern` path, with legacy path adapters retained for compatibility. The Viewer has no platform-specific behavior branch.
-- Headless tests cover one full decode, opacity states, previous-image retention, latest-request-wins, bounded queues, cache LRU/budget/invalidation, Neighborhood prefetch, repeat phase/clipping, resize, transforms, and deterministic key-repeat behavior.
+- Headless tests cover one full decode, opacity states, previous-image retention, latest-request-wins, bounded queues, cache LRU/budget/invalidation, Neighborhood prefetch, repeat phase/clipping, resize, transforms, deterministic key-repeat, and 20,000-Sibling snapshot integration.
+- The scanner still emits first content and the prioritized Neighborhood before the full natural sort. It then sends one final playlist snapshot, which the UI installs within a four-batch, 1 ms per-frame poll budget instead of merging every discovery batch on the render thread.
 - AppKit, UIKit, and Windows source/contract checks are present. Native runtime builds, screenshots, and visual regressions were not run on this Linux host. The full UI2 aggregate suite still has unrelated host/platform failures; the focused contract checks pass.
 - Portable V exposes `os.ls` but no streaming directory iterator. Direct targets are sent before directory enumeration and sorting; directory launches document the remaining `os.ls` enumeration boundary. No Viewer platform branch was added.
 - The 4K60 target requires an exact 3840x2160 measured viewport and a post-present fence or GPU timestamp. The current evidence does not satisfy that prerequisite.
