@@ -568,7 +568,7 @@ fn run_headless_benchmark(config BenchmarkConfig) ! {
 	println('config=warmup:${config.warmup} iterations:${config.iterations} cache:${benchmark_cache_name(config.cache)} cache_budget_override:${config.cache_budget_bytes}')
 	println('fixtures=alpha:64x64 opaque:96x64 large_4k:${benchmark_large_width}x${benchmark_large_height} large_alpha:${benchmark_large_width}x${benchmark_large_height} large_siblings:2 siblings:${fixtures.sibling_count} generation_ms=${benchmark_ms(fixture_elapsed)}')
 	println('cache_note=image rows have no application cache; sibling-lru rows use the full-resolution resource cache')
-	println('sibling_counter_note=requested/displayed/skipped/coalesced count user Sibling requests; prefetch columns count Sibling candidates and accepted cache insertions')
+	println('sibling_counter_note=requested/displayed/skipped/coalesced count user Sibling requests; prefetch columns count Neighborhood candidates and accepted cache insertions')
 	println('cache_separation=Filmstrip Thumbnail Cache remains a separate cache and is not included in sibling-lru budget accounting')
 	println('pattern_note=the Viewer uses one 32x32 logical repeat tile; no full-window raster is generated')
 	println('measurement=screen rows build UI2 elements only and do not include GPU submission')

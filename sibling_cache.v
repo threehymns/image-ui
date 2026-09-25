@@ -5,7 +5,7 @@ import os
 import ui2
 
 pub const default_sibling_cache_budget_bytes = 256 * 1024 * 1024
-pub const default_sibling_cache_radius = 1
+pub const default_sibling_cache_neighborhood_radius = 1
 
 pub fn configured_sibling_cache_budget_bytes() int {
 	value := os.getenv('IMAGE_UI_SIBLING_CACHE_BUDGET_BYTES')
@@ -16,13 +16,13 @@ pub fn configured_sibling_cache_budget_bytes() int {
 	return if parsed < 0 { default_sibling_cache_budget_bytes } else { parsed }
 }
 
-pub fn configured_sibling_cache_radius() int {
-	value := os.getenv('IMAGE_UI_SIBLING_CACHE_RADIUS')
+pub fn configured_sibling_cache_neighborhood_radius() int {
+	value := os.getenv('IMAGE_UI_SIBLING_CACHE_NEIGHBORHOOD_RADIUS')
 	if value.len == 0 {
-		return default_sibling_cache_radius
+		return default_sibling_cache_neighborhood_radius
 	}
 	parsed := value.int()
-	return if parsed < 0 { default_sibling_cache_radius } else { parsed }
+	return if parsed < 0 { default_sibling_cache_neighborhood_radius } else { parsed }
 }
 
 pub struct SiblingFileSignature {

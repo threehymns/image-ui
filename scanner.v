@@ -18,15 +18,15 @@ pub const supported_image_extensions = [
 ]
 
 pub const scanner_batch_size = 50
-pub const scanner_sibling_radius = 50
+pub const scanner_neighborhood_radius = 50
 
 pub struct SiblingBatch {
 pub:
-	items             []string
-	is_sibling_window bool
-	is_last           bool
-	generation        int
-	is_first_content  bool
+	items            []string
+	is_neighborhood  bool
+	is_last          bool
+	generation       int
+	is_first_content bool
 }
 
 pub type SiblingDirectorySource = fn (string) ![]string
@@ -234,7 +234,7 @@ fn keep_smallest_after(mut paths []string, candidate string, limit int) []string
 	return paths
 }
 
-fn sibling_scan_window(image_files []string, target_path string, radius int) []string {
+fn sibling_neighborhood_paths(image_files []string, target_path string, radius int) []string {
 	if image_files.len == 0 {
 		return []
 	}
@@ -282,11 +282,11 @@ fn scan_directory_siblings_with_source_and_sorter(dir_path string, target_path s
 	}
 	if !os.is_dir(dir_path) {
 		send_scan_batch(ch, cancel, SiblingBatch{
-			items:             []
-			is_sibling_window: true
-			is_last:           true
-			generation:        generation
-			is_first_content:  false
+			items:            []
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: false
 		})
 		return
 	}
@@ -294,22 +294,22 @@ fn scan_directory_siblings_with_source_and_sorter(dir_path string, target_path s
 		&& !os.is_dir(target_path)
 	if direct_target {
 		if !send_scan_batch(ch, cancel, SiblingBatch{
-			items:             [target_path]
-			is_sibling_window: false
-			is_last:           false
-			generation:        generation
-			is_first_content:  true
+			items:            [target_path]
+			is_neighborhood:  false
+			is_last:          false
+			generation:       generation
+			is_first_content: true
 		}) {
 			return
 		}
 	}
 	entries := source(dir_path) or {
 		send_scan_batch(ch, cancel, SiblingBatch{
-			items:             []
-			is_sibling_window: true
-			is_last:           true
-			generation:        generation
-			is_first_content:  false
+			items:            []
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: false
 		})
 		return
 	}
@@ -322,11 +322,11 @@ fn scan_directory_siblings_with_source_and_sorter(dir_path string, target_path s
 	}
 	if image_files.len == 0 {
 		send_scan_batch(ch, cancel, SiblingBatch{
-			items:             []
-			is_sibling_window: true
-			is_last:           true
-			generation:        generation
-			is_first_content:  false
+			items:            []
+			is_neighborhood:  true
+			is_last:          true
+			generation:       generation
+			is_first_content: false
 		})
 		return
 	}
@@ -337,27 +337,27 @@ fn scan_directory_siblings_with_source_and_sorter(dir_path string, target_path s
 	}
 	if !direct_target {
 		if !send_scan_batch(ch, cancel, SiblingBatch{
-			items:             [resolved_target]
-			is_sibling_window: false
-			is_last:           false
-			generation:        generation
-			is_first_content:  true
+			items:            [resolved_target]
+			is_neighborhood:  false
+			is_last:          false
+			generation:       generation
+			is_first_content: true
 		}) {
 			return
 		}
 	}
-	sibling_window := sibling_scan_window(image_files, resolved_target, scanner_sibling_radius)
+	neighborhood_paths := sibling_neighborhood_paths(image_files, resolved_target, scanner_neighborhood_radius)
 	if !send_scan_batch(ch, cancel, SiblingBatch{
-		items:             sibling_window
-		is_sibling_window: true
-		is_last:           false
-		generation:        generation
-		is_first_content:  direct_target
+		items:            neighborhood_paths
+		is_neighborhood:  true
+		is_last:          false
+		generation:       generation
+		is_first_content: direct_target
 	}) {
 		return
 	}
 	mut sent := map[string]bool{}
-	for path in sibling_window {
+	for path in neighborhood_paths {
 		sent[path] = true
 	}
 	sorter(mut image_files)
@@ -370,22 +370,22 @@ fn scan_directory_siblings_with_source_and_sorter(dir_path string, target_path s
 	for start := 0; start < remaining.len; start += scanner_batch_size {
 		end := math.min(remaining.len, start + scanner_batch_size)
 		if !send_scan_batch(ch, cancel, SiblingBatch{
-			items:             remaining[start..end].clone()
-			is_sibling_window: false
-			is_last:           end == remaining.len
-			generation:        generation
-			is_first_content:  false
+			items:            remaining[start..end].clone()
+			is_neighborhood:  false
+			is_last:          end == remaining.len
+			generation:       generation
+			is_first_content: false
 		}) {
 			return
 		}
 	}
 	if remaining.len == 0 {
 		send_scan_batch(ch, cancel, SiblingBatch{
-			items:             []
-			is_sibling_window: false
-			is_last:           true
-			generation:        generation
-			is_first_content:  false
+			items:            []
+			is_neighborhood:  false
+			is_last:          true
+			generation:       generation
+			is_first_content: false
 		})
 	}
 }

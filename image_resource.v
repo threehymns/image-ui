@@ -157,7 +157,7 @@ mut:
 	signature SiblingFileSignature
 }
 
-pub struct SiblingPrefetch {
+pub struct SiblingNeighborhood {
 pub:
 	scan_generation int
 	direction       int
@@ -238,7 +238,7 @@ pub mut:
 	scan_generation      int
 	direction            int
 	context_valid        bool
-	paths                []string
+	neighborhood_paths   []string
 	last_prefetched_path string
 	has_last_prefetched  bool
 	metrics              ImagePrefetchMetrics
@@ -262,7 +262,7 @@ pub mut:
 	resident_signature               SiblingFileSignature
 	cache                            SiblingResourceCache
 	nearby_paths                     []string
-	sibling_radius                   int = default_sibling_cache_radius
+	sibling_neighborhood_radius      int = default_sibling_cache_neighborhood_radius
 	prefetch                         ImagePrefetchScheduler
 	metrics                          ImagePipelineMetrics
 	manual                           bool
@@ -492,7 +492,7 @@ pub fn (mut pipeline ImagePipeline) set_nearby_paths(paths []string) {
 
 pub fn (mut pipeline ImagePipeline) update_retention() {
 	mut nearby := pipeline.nearby_paths.clone()
-	for path in pipeline.prefetch.paths {
+	for path in pipeline.prefetch.neighborhood_paths {
 		if path !in nearby {
 			nearby << path
 		}
@@ -573,7 +573,7 @@ fn (mut scheduler ImagePrefetchScheduler) cancel(replaced bool) bool {
 	}
 	scheduler.generation++
 	scheduler.context_valid = false
-	scheduler.paths = []string{}
+	scheduler.neighborhood_paths = []string{}
 	if scheduler.has_active {
 		if !scheduler.active_cancelled {
 			if token := scheduler.active_token {
@@ -655,19 +655,19 @@ fn (mut pipeline ImagePipeline) pump_prefetch() {
 	pipeline.update_pending_metrics()
 }
 
-pub fn (mut pipeline ImagePipeline) set_sibling_prefetch(prefetch SiblingPrefetch) {
-	if prefetch.scan_generation < pipeline.prefetch.scan_generation {
+pub fn (mut pipeline ImagePipeline) set_prefetch_neighborhood(neighborhood SiblingNeighborhood) {
+	if neighborhood.scan_generation < pipeline.prefetch.scan_generation {
 		return
 	}
 	mut candidates := []string{}
-	if prefetch.direction < 0 {
-		candidates << prefetch.current_path
-		candidates << prefetch.previous_path
-		candidates << prefetch.next_path
+	if neighborhood.direction < 0 {
+		candidates << neighborhood.current_path
+		candidates << neighborhood.previous_path
+		candidates << neighborhood.next_path
 	} else {
-		candidates << prefetch.current_path
-		candidates << prefetch.next_path
-		candidates << prefetch.previous_path
+		candidates << neighborhood.current_path
+		candidates << neighborhood.next_path
+		candidates << neighborhood.previous_path
 	}
 	mut unique := []string{}
 	for path in candidates {
@@ -676,18 +676,18 @@ pub fn (mut pipeline ImagePipeline) set_sibling_prefetch(prefetch SiblingPrefetc
 		}
 	}
 	if pipeline.prefetch.context_valid
-		&& pipeline.prefetch.scan_generation == prefetch.scan_generation
-		&& pipeline.prefetch.direction == prefetch.direction
-		&& pipeline.prefetch.paths == unique {
+		&& pipeline.prefetch.scan_generation == neighborhood.scan_generation
+		&& pipeline.prefetch.direction == neighborhood.direction
+		&& pipeline.prefetch.neighborhood_paths == unique {
 		return
 	}
 	if pipeline.prefetch.cancel(true) {
 		pipeline.update_retention()
 	}
-	pipeline.prefetch.scan_generation = prefetch.scan_generation
-	pipeline.prefetch.direction = prefetch.direction
+	pipeline.prefetch.scan_generation = neighborhood.scan_generation
+	pipeline.prefetch.direction = neighborhood.direction
 	pipeline.prefetch.context_valid = true
-	pipeline.prefetch.paths = unique.clone()
+	pipeline.prefetch.neighborhood_paths = unique.clone()
 	for path in unique {
 		pipeline.prefetch.metrics.requested++
 		pipeline.enqueue_prefetch_path(path)
@@ -805,6 +805,12 @@ pub fn (mut pipeline ImagePipeline) request_with_generation(path string, reason 
 		if pipeline.has_active {
 			pipeline.queue(request)
 		} else {
+			if pipeline.has_ready {
+				pipeline.metrics.coalesced++
+				pipeline.metrics.skipped++
+				pipeline.ready_resource = ui2.ImageResource{}
+				pipeline.ready_request = ImageRequest{}
+			}
 			pipeline.has_ready = false
 			pipeline.dispatch(request)
 		}
@@ -1114,7 +1120,7 @@ pub fn (mut pipeline ImagePipeline) poll() []ImagePipelineResult {
 				}
 				context_current := !normalized.cancelled && pipeline.prefetch.context_valid
 					&& normalized.request.generation == pipeline.prefetch.generation
-					&& normalized.request.path in pipeline.prefetch.paths
+					&& normalized.request.path in pipeline.prefetch.neighborhood_paths
 				if context_current && normalized.resource.state == .ready {
 					if pipeline.cache.put(normalized.request.path, normalized.signature,
 						normalized.resource, normalized.cpu_bytes, normalized.renderer_bytes) {

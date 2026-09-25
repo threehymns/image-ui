@@ -455,8 +455,6 @@ fn benchmark_key_action(code ui2.KeyCode) string {
 		.t { 'toggle' }
 		.right, .left { 'switch' }
 		.equal, .kp_add, .minus, .kp_subtract { 'zoom' }
-		.p { 'pan' }
-		.z { 'zoom' }
 		else { '' }
 	}
 }

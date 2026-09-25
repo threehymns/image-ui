@@ -179,13 +179,13 @@ fn test_app_playlist_navigation() {
 	assert app.playlist == ['/photos/img5.png']
 	assert app.active_index == 0
 
-	// Integrate Sibling window batch
+	// Integrate Neighborhood batch
 	batch := SiblingBatch{
-		items:             ['/photos/img1.png', '/photos/img2.png', '/photos/img5.png',
+		items:           ['/photos/img1.png', '/photos/img2.png', '/photos/img5.png',
 			'/photos/img10.png', '/photos/img20.png']
-		is_sibling_window: true
-		is_last:           true
-		generation:        app.scan_generation
+		is_neighborhood: true
+		is_last:         true
+		generation:      app.scan_generation
 	}
 	app.integrate_batch(batch)
 	assert app.playlist.len == 5
@@ -225,12 +225,12 @@ fn test_app_progressive_batch_integration_preserves_active() {
 	mut app := new_app()
 	app.open_path('/photos/pic50.png')
 
-	// First batch: Sibling window of 50..60
+	// First batch: Neighborhood of 50..60
 	batch1 := SiblingBatch{
-		items:             ['/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
-		is_sibling_window: true
-		is_last:           false
-		generation:        app.scan_generation
+		items:           ['/photos/pic50.png', '/photos/pic51.png', '/photos/pic52.png']
+		is_neighborhood: true
+		is_last:         false
+		generation:      app.scan_generation
 	}
 	app.integrate_batch(batch1)
 	assert app.active_index == 0
@@ -245,10 +245,10 @@ fn test_app_progressive_batch_integration_preserves_active() {
 
 	// Progressive batch arrives with preceding items (pic10..pic49)
 	batch2 := SiblingBatch{
-		items:             ['/photos/pic10.png', '/photos/pic20.png']
-		is_sibling_window: false
-		is_last:           true
-		generation:        app.scan_generation
+		items:           ['/photos/pic10.png', '/photos/pic20.png']
+		is_neighborhood: false
+		is_last:         true
+		generation:      app.scan_generation
 	}
 	app.integrate_batch(batch2)
 
@@ -333,7 +333,7 @@ fn test_app_directory_first_content_before_completion() {
 
 	first := next_app_scan_batch(ch)
 	assert first.is_first_content == true
-	assert first.is_sibling_window == false
+	assert first.is_neighborhood == false
 	assert first.is_last == false
 	assert first.items == [os.join_path(tmp_dir, 'img1.png')]
 	app.integrate_batch(first)

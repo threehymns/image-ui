@@ -121,20 +121,20 @@ fn test_scan_directory_siblings_streaming() {
 		}
 	}
 
-	// Verify prioritized Sibling window batch came first
+	// Verify prioritized Neighborhood batch came first
 	assert batches.len >= 2
 	first_batch := batches[0]
-	assert first_batch.is_sibling_window == false
+	assert first_batch.is_neighborhood == false
 	assert first_batch.is_first_content == true
 	assert first_batch.items == [target]
-	window_batch := batches[1]
-	assert window_batch.is_sibling_window == true
-	assert window_batch.is_last == false
-	// Sibling window of target pic60 (at index 59) should contain ±50 files (101 items)
-	assert window_batch.items.len == 101
+	neighborhood_batch := batches[1]
+	assert neighborhood_batch.is_neighborhood == true
+	assert neighborhood_batch.is_last == false
+	// Neighborhood of target pic60 (at index 59) should contain ±50 files (101 items)
+	assert neighborhood_batch.items.len == 101
 
-	// Verify target is present in Sibling window
-	assert target in window_batch.items
+	// Verify target is present in Neighborhood
+	assert target in neighborhood_batch.items
 
 	// Verify all 120 files were delivered
 	assert all_streamed.len == 120
@@ -179,7 +179,7 @@ fn test_scanner_cancellation_stops_worker() {
 	}
 }
 
-fn test_first_content_and_sibling_window_precede_full_natural_sort() {
+fn test_first_content_and_neighborhood_precede_full_natural_sort() {
 	root := os.join_path(os.temp_dir(), 'test_scan_before_sort_${time.ticks()}')
 	os.mkdir_all(root) or { panic(err) }
 	defer {
@@ -205,12 +205,12 @@ fn test_first_content_and_sibling_window_precede_full_natural_sort() {
 			panic('scanner sort did not start')
 		}
 	}
-	window := next_scan_batch(ch)
-	assert window.is_sibling_window
-	assert window.items.len == scanner_sibling_radius * 2 + 1
-	assert target in window.items
+	neighborhood := next_scan_batch(ch)
+	assert neighborhood.is_neighborhood
+	assert neighborhood.items.len == scanner_neighborhood_radius * 2 + 1
+	assert target in neighborhood.items
 	scanner_test_sort_release.close()
-	mut current := window
+	mut current := neighborhood
 	for !current.is_last {
 		current = next_scan_batch(ch)
 	}
@@ -263,19 +263,19 @@ fn test_scan_directory_siblings_large_directory_first_content_before_completion(
 
 	first := next_scan_batch(ch)
 	assert first.generation == generation
-	assert first.is_sibling_window == false
+	assert first.is_neighborhood == false
 	assert first.is_first_content == true
 	assert first.is_last == false
 	assert first.items == [target]
-	window := next_scan_batch(ch)
-	assert window.generation == generation
-	assert window.is_sibling_window == true
-	assert window.items.len == 101
-	assert target in window.items
+	neighborhood := next_scan_batch(ch)
+	assert neighborhood.generation == generation
+	assert neighborhood.is_neighborhood == true
+	assert neighborhood.items.len == 101
+	assert target in neighborhood.items
 
 	mut all_streamed := []string{}
 	mut batches := 0
-	mut current := window
+	mut current := neighborhood
 	for {
 		batches++
 		for item in current.items {

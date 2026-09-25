@@ -18,29 +18,29 @@ pub const error_text_hex = u32(0xdc5a5a)
 @[heap]
 pub struct ViewerApp {
 pub mut:
-	core                       App
-	image_loader               ImageResourceLoader
-	image_pipeline             ImagePipeline
-	sibling_cache_budget_bytes int
-	sibling_cache_radius       int = -1
-	window_ready               bool
-	native_window_ready        bool
-	is_dragging                bool
-	drag_prev_x                f64
-	drag_prev_y                f64
-	last_click_time            i64
-	last_click_x               f64
-	last_click_y               f64
-	scanned_dir                string
-	scanner_ch                 chan SiblingBatch
-	has_scanner_ch             bool
-	scanner_cancel             chan bool
-	has_scanner_cancel         bool
-	requested_window_w         int
-	requested_window_h         int
-	navigation_direction       int
-	transparency_pattern       ui2.RepeatPattern
-	benchmark_live             BenchmarkLiveTrace
+	core                              App
+	image_loader                      ImageResourceLoader
+	image_pipeline                    ImagePipeline
+	sibling_cache_budget_bytes        int
+	sibling_cache_neighborhood_radius int = -1
+	window_ready                      bool
+	native_window_ready               bool
+	is_dragging                       bool
+	drag_prev_x                       f64
+	drag_prev_y                       f64
+	last_click_time                   i64
+	last_click_x                      f64
+	last_click_y                      f64
+	scanned_dir                       string
+	scanner_ch                        chan SiblingBatch
+	has_scanner_ch                    bool
+	scanner_cancel                    chan bool
+	has_scanner_cancel                bool
+	requested_window_w                int
+	requested_window_h                int
+	navigation_direction              int
+	transparency_pattern              ui2.RepeatPattern
+	benchmark_live                    BenchmarkLiveTrace
 }
 
 // update_window_title refreshes the window title to show image name, dimensions, and playlist index.
@@ -121,10 +121,10 @@ fn (mut app ViewerApp) ensure_image_pipeline() {
 	} else if !app.image_pipeline.manual && voidptr(app.image_pipeline.decoder) == unsafe { nil } {
 		app.image_pipeline.decoder = app.image_loader.decoder
 	}
-	if app.sibling_cache_radius >= 0 {
-		app.image_pipeline.sibling_radius = app.sibling_cache_radius
+	if app.sibling_cache_neighborhood_radius >= 0 {
+		app.image_pipeline.sibling_neighborhood_radius = app.sibling_cache_neighborhood_radius
 	} else if pipeline_created {
-		app.image_pipeline.sibling_radius = configured_sibling_cache_radius()
+		app.image_pipeline.sibling_neighborhood_radius = configured_sibling_cache_neighborhood_radius()
 	}
 	if app.sibling_cache_budget_bytes > 0 {
 		app.image_pipeline.set_cache_budget(app.sibling_cache_budget_bytes)
@@ -144,13 +144,13 @@ fn (mut app ViewerApp) sync_sibling_cache_retention() {
 		return
 	}
 	if !app.core.has_image {
-		app.image_pipeline.set_sibling_prefetch(SiblingPrefetch{
+		app.image_pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 			scan_generation: app.core.scan_generation
 			direction:       app.navigation_direction
 		})
 		return
 	}
-	mut radius := app.image_pipeline.sibling_radius
+	mut radius := app.image_pipeline.sibling_neighborhood_radius
 	if radius < 0 {
 		radius = 0
 	}
@@ -182,7 +182,7 @@ fn (mut app ViewerApp) sync_sibling_cache_retention() {
 	} else {
 		''
 	}
-	app.image_pipeline.set_sibling_prefetch(SiblingPrefetch{
+	app.image_pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: app.core.scan_generation
 		direction:       app.navigation_direction
 		previous_path:   previous
@@ -268,7 +268,7 @@ fn (mut app ViewerApp) start_scanner(dir_path string, target_path string, force 
 	app.has_scanner_cancel = true
 	app.core.begin_scan(generation)
 	if app.image_pipeline.configured {
-		app.image_pipeline.set_sibling_prefetch(SiblingPrefetch{
+		app.image_pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 			scan_generation: generation
 			direction:       app.navigation_direction
 		})
@@ -644,8 +644,10 @@ pub fn (mut app ViewerApp) handle_key_event(e ui2.KeyEvent) {
 		if app.benchmark_live.enabled {
 			if e.code == .p {
 				app.core.pan(24.0, 24.0)
+				app.benchmark_live.on_pointer('pan_${app.benchmark_image_variant()}')
 			} else if e.code == .z {
 				app.core.zoom_in()
+				app.benchmark_live.on_pointer('zoom_${app.benchmark_image_variant()}')
 			}
 		}
 	}

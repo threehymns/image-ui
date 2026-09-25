@@ -285,7 +285,7 @@ fn test_prefetched_resource_is_reused_by_user_request_without_second_decode() {
 	}
 	sibling_cache_test_decode_count = 0
 	mut pipeline := new_image_pipeline_with_cache(sibling_cache_test_decoder, 1024)
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 1
 		direction:       1
 		current_path:    current
@@ -376,8 +376,8 @@ fn test_pipeline_keeps_current_resource_when_obsolete_completion_arrives() {
 	assert pipeline.resident_resource.source == latest_path
 }
 
-fn test_viewer_configures_nearby_retention_and_prefetches_immediate_sibling_window() {
-	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-sibling_window-${time.ticks()}')
+fn test_viewer_configures_nearby_retention_and_prefetches_immediate_neighborhood() {
+	root := os.join_path(os.temp_dir(), 'image-ui-prefetch-neighborhood-${time.ticks()}')
 	os.mkdir_all(root) or { panic(err) }
 	defer {
 		os.rmdir_all(root) or {}
@@ -389,9 +389,9 @@ fn test_viewer_configures_nearby_retention_and_prefetches_immediate_sibling_wind
 		os.write_file(path, 'fixture') or { panic(err) }
 	}
 	mut app := &ViewerApp{
-		core:                 new_app()
-		image_pipeline:       new_manual_image_pipeline()
-		sibling_cache_radius: 2
+		core:                              new_app()
+		image_pipeline:                    new_manual_image_pipeline()
+		sibling_cache_neighborhood_radius: 2
 	}
 	app.core.playlist = [previous, current, next]
 	app.core.active_index = 1
@@ -429,7 +429,7 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 		os.write_file(path, 'fixture') or { panic(err) }
 	}
 	mut pipeline := new_manual_image_pipeline()
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 1
 		direction:       1
 		current_path:    current
@@ -438,7 +438,7 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 	first_generation := pipeline.prefetch_generation()
 	assert pipeline.prefetch_active_request().path == current
 
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 4
 		direction:       -1
 		previous_path:   previous
@@ -455,7 +455,7 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 	assert pipeline.prefetch_active_request().path == current
 	assert pipeline.prefetch_queued_request().path == previous
 
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 5
 		direction:       -1
 		previous_path:   previous
@@ -469,7 +469,7 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 	assert pipeline.prefetch_metrics().cancelled >= 2
 	assert pipeline.prefetch_metrics().skipped >= 2
 	stale_generation := pipeline.prefetch_generation()
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 3
 		direction:       1
 		previous_path:   previous
@@ -480,7 +480,7 @@ fn test_prefetch_stops_when_scan_generation_or_direction_changes() {
 	assert pipeline.prefetch_generation() == stale_generation
 }
 
-fn test_scanner_sibling_window_batch_starts_prefetch_for_discovered_paths() {
+fn test_scanner_neighborhood_batch_starts_prefetch_for_discovered_paths() {
 	root := os.join_path(os.temp_dir(), 'image-ui-scanner-prefetch-${time.ticks()}')
 	os.mkdir_all(root) or { panic(err) }
 	defer {
@@ -504,10 +504,10 @@ fn test_scanner_sibling_window_batch_starts_prefetch_for_discovered_paths() {
 	app.scanner_ch = chan SiblingBatch{cap: 1}
 	app.has_scanner_ch = true
 	app.scanner_ch <- SiblingBatch{
-		items:             [previous, current, next]
-		is_sibling_window: true
-		is_last:           true
-		generation:        app.core.scan_generation
+		items:           [previous, current, next]
+		is_neighborhood: true
+		is_last:         true
+		generation:      app.core.scan_generation
 	}
 	app.poll_scanner()
 	assert app.core.playlist == [previous, current, next]
@@ -530,7 +530,7 @@ fn test_user_request_has_independent_priority_over_active_prefetch() {
 		os.write_file(path, 'fixture') or { panic(err) }
 	}
 	mut pipeline := new_manual_image_pipeline()
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 1
 		direction:       1
 		previous_path:   previous

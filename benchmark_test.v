@@ -165,6 +165,22 @@ fn test_benchmark_config_exposes_fixed_sample_and_cache_controls() {
 	assert benchmark_cache_budgets(config_with_budget) == [65536]
 }
 
+fn test_live_trace_benchmark_keys_use_variant_pointer_actions() {
+	assert benchmark_key_action(.p) == ''
+	assert benchmark_key_action(.z) == ''
+	assert benchmark_key_action(.t) == 'toggle'
+	mut trace := new_benchmark_live_trace()
+	trace.enabled = true
+	trace.on_pointer('pan_transparent')
+	assert trace.has_input
+	assert trace.pending_actions.len == 1
+	assert trace.pending_actions[0].action == 'pan_transparent'
+	trace.pending_actions.clear()
+	trace.on_pointer('zoom_opaque')
+	assert trace.pending_actions.len == 1
+	assert trace.pending_actions[0].action == 'zoom_opaque'
+}
+
 fn test_live_trace_marks_content_after_frame_completion() {
 	mut trace := new_benchmark_live_trace()
 	trace.enabled = true

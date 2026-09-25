@@ -1,6 +1,6 @@
 # Viewer performance benchmarks
 
-The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, Sibling window prefetch, deterministic key-repeat simulations, startup phase tracing, and separate transparent/opaque 3840x2160 pan and zoom rows. Every row reports fixed warmup/iteration counts, a returned-value checksum, decode counts, cache accounting, prefetch behavior, and counter checks. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
+The root benchmark suite measures the current Viewer path, including asynchronous image resources, the background scanner, the byte-bounded Sibling resource cache, the cached transparency tile, Neighborhood prefetch, deterministic key-repeat simulations, startup phase tracing, and separate transparent/opaque 3840x2160 pan and zoom rows. Every row reports fixed warmup/iteration counts, a returned-value checksum, decode counts, cache accounting, prefetch behavior, and counter checks. CI compiles it and runs correctness tests, but hosted runners do not enforce wall-clock thresholds.
 
 ## Commands
 
@@ -93,7 +93,7 @@ The headless binary never calls `ui2.run_window`. It can therefore run on a mach
 
 `screen_construct_4k`, the four `pan_4k_*`/`zoom_4k_*` rows, `frame_prepare_4k`, and `toggle_checkerboard_4k` stop before GPU submission. They are CPU and element-construction measurements, not rendered-frame measurements. The resident-switch rows likewise measure the state transition and UI2 element construction; their fixture decode and cache population happen before the stopwatch starts and are identified separately from measured decode counters.
 
-Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations/content validations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Sibling window candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. Cache identity checks use portable stat fields; periodic current-resource validation reads the complete file for SHA-256 comparison, so validation is not claimed to be I/O-free. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
+Every row includes warmup count, fixed measured iteration count, cache label, byte budget, median, p95, decode and prefetch-decode counts, cache hits/misses/updates/evictions/invalidations/content validations, resident/peak/CPU/renderer bytes, and a returned-value checksum. The `requested`, `displayed`, `skipped`, and `coalesced` columns count user Sibling requests. The prefetch columns count Neighborhood candidates, accepted full-resolution cache insertions, skips, coalescing, and cancellation. `checksum samples` and `checksum mismatches` make the fixed-iteration verification explicit. A checksum or counter mismatch fails the command. Cache identity checks use portable stat fields; periodic current-resource validation reads the complete file for SHA-256 comparison, so validation is not claimed to be I/O-free. CI compiles the benchmark and runs correctness tests but does not run timing thresholds.
 
 ### Startup phase trace
 
@@ -125,7 +125,7 @@ The following rows were recorded on 2026-09-25 from commit `2defcde3dbe4` with 2
 
 The 16 KiB and 32 KiB opaque rows reject the 49,152-byte decoded-plus-renderer entry. The 64 KiB row retains it. The 4K row retains 33,177,600 CPU bytes plus 33,177,600 renderer bytes. The Filmstrip Thumbnail Cache is not part of these totals.
 
-## Sibling window prefetch and key-repeat baseline
+## Neighborhood prefetch and key-repeat baseline
 
 The following repeatable headless rows were recorded on 2026-09-25 from commit `07702405e4b7` with `make benchmark`: two warmups, 10 measured iterations, both cache states, and the default 256 MiB full-resolution budget for the 4K row. The machine was the available Linux 7.1.8-arch1-3 x86_64 host with an Intel Core i7-8565U, 8 logical CPUs, 32,628,928 kB RAM, and `i915`; the V toolchain was 0.5.2 (`26fdab8`) with GCC 16.2.1.
 
@@ -150,7 +150,7 @@ The harness sends real Wayland key input through `wtype` and verifies each actio
 - `p` is available only in the benchmark build and calls the current `App.pan` path.
 - `z` is available only in the benchmark build and calls the current `App.zoom_in` path.
 
-The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, sustained Left/Right input counts, Sibling window prefetch counters, decode counts, cache hit/miss/update/eviction/invalidation/content-validation counters, cache byte budgets, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
+The trace reports process launch to first content, process launch to the harness's first input, separate monotonic startup-phase timestamps, each input-to-next-screen-build interval, compositor resize request to the 3840-pixel resize observation, frame-callback cadence, user Sibling counters, sustained Left/Right input counts, Neighborhood prefetch counters, decode counts, cache hit/miss/update/eviction/invalidation/content-validation counters, cache byte budgets, and a trace checksum. The first-content mark is tied to a ready image resource rather than the initial empty/drop-target frame.
 
 The cadence and `switch_to_frame` values are intervals between Viewer `build_screen` callbacks. UI2 does not expose a post-present fence or GPU timestamp, so these values do not prove when the compositor presented the frame. The live report prints `viewport_exact_3840x2160`, `post_present_fence`, and `target_4k60` explicitly; a false exact-viewport result or unavailable fence is a limitation, not a pass.
 

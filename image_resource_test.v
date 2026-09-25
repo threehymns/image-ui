@@ -394,7 +394,7 @@ fn test_cancelled_prefetch_never_commits_and_pumps_latest_context() {
 	image_pipeline_test_decode_release = chan bool{}
 	image_resource_test_decode_count = 0
 	mut pipeline := new_image_pipeline(image_pipeline_test_gated_decoder)
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 1
 		direction:       1
 		current_path:    first_path
@@ -408,7 +408,7 @@ fn test_cancelled_prefetch_never_commits_and_pumps_latest_context() {
 		}
 	}
 	assert started == first_path
-	pipeline.set_sibling_prefetch(SiblingPrefetch{
+	pipeline.set_prefetch_neighborhood(SiblingNeighborhood{
 		scan_generation: 2
 		direction:       1
 		current_path:    latest_path
@@ -483,6 +483,30 @@ fn test_pipeline_coalesces_rapid_input_to_one_queued_request() {
 	assert pipeline.metrics.skipped == 99
 	assert pipeline.metrics.coalesced == 99
 	assert pipeline.current_request().generation == 101
+}
+
+fn test_new_cache_miss_coalesces_pending_cache_hit() {
+	root := os.join_path(os.temp_dir(), 'image-ui-ready-coalesce-${time.ticks()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	paths := image_resource_test_siblings(root, 2)
+	mut pipeline := new_manual_image_pipeline()
+	first_signature := sibling_file_content_signature(paths[0])
+	assert pipeline.cache.put(paths[0], first_signature, image_resource_test_ready(paths[0], 'first'), 8, 8)
+	first := pipeline.request(paths[0], 'first')
+	assert pipeline.has_ready
+	latest := pipeline.request(paths[1], 'latest')
+	assert first.generation < latest.generation
+	assert !pipeline.has_ready
+	assert pipeline.has_active
+	assert pipeline.metrics.skipped == 1
+	assert pipeline.metrics.coalesced == 1
+	assert pipeline.complete(latest.generation, latest.path, image_resource_test_ready(paths[1], 'latest'))
+	results := pipeline.poll()
+	assert results.len == 1
+	assert results[0].request.path == paths[1]
 }
 
 fn test_resident_right_key_repeat_displays_every_sibling_in_order() {
