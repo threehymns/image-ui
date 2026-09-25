@@ -82,6 +82,23 @@ Every row includes warmup count, fixed iteration count, cache label, byte budget
 - The Filmstrip Thumbnail Cache remains separate under ADR-0003. No Filmstrip rows are included in the Sibling-cache measurements.
 - Live cold and warm labels describe separate process runs; they do not control a checkerboard file.
 
+## Sibling Resource Cache baseline
+
+The following rows were recorded on 2026-09-25 from commit `d0fafbf4b136` with 2 warmups and 10 measured iterations. The warm rows prefill the cache before starting the timer, so their timer covers signature validation and resident lookup. Byte totals include decoded CPU bytes and renderer bytes.
+
+| Case | Budget | Median ms | p95 ms | Hits | Misses | Updates | Evictions | Resident bytes | Checksum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `sibling_cache_cold`, opaque | 16 KiB | 0.27 | 0.31 | 0 | 0 | 0 | 0 | 0 | `3e3b230aed0713ef` |
+| `sibling_cache_warm`, opaque | 16 KiB | 0.00 | 0.00 | 0 | 1 | 0 | 0 | 0 | `300000005190` |
+| `sibling_cache_cold`, opaque | 32 KiB | 0.27 | 0.28 | 0 | 0 | 0 | 0 | 0 | `3e3b230aed0713ef` |
+| `sibling_cache_warm`, opaque | 32 KiB | 0.00 | 0.00 | 0 | 1 | 0 | 0 | 0 | `300000005190` |
+| `sibling_cache_cold`, opaque | 64 KiB | 0.27 | 0.29 | 0 | 0 | 0 | 0 | 49,152 | `3e3b220aed07123c` |
+| `sibling_cache_warm`, opaque | 64 KiB | 0.00 | 0.00 | 1 | 0 | 0 | 0 | 49,152 | `3e3b220aed07123c` |
+| `sibling_cache_4k_cold`, large-4k | 256 MiB | 414.14 | 808.85 | 0 | 0 | 0 | 0 | 66,355,200 | `84f927381687d2bf` |
+| `sibling_cache_4k_warm`, large-4k | 256 MiB | 0.00 | 0.00 | 1 | 0 | 0 | 0 | 66,355,200 | `84f927381687d2bf` |
+
+The 16 KiB and 32 KiB opaque rows reject the 49,152-byte decoded-plus-renderer entry. The 64 KiB row retains it. The 4K row retains 33,177,600 CPU bytes plus 33,177,600 renderer bytes. The Filmstrip Thumbnail Cache is not part of these totals.
+
 ## Live Wayland smoke
 
 Each live run starts the benchmark build with the 4K image fixture, waits for the first content screen and complete directory scan, then asks niri to resize the focused tiled window. The report uses the actual measured viewport; a 3840-pixel width without a 2160-pixel height is not 4K evidence. The run collects 360 frame callbacks, discards the first 60 as warmup, and reports median and p95 for the remaining 300.
